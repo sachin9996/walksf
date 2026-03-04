@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SF Walk%</title>
+  <link rel="icon" href="/static/images/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/index.css">
+</head>
+
+<body>
+  <div id="mapWrap">
+    <canvas id="map" tabindex="0" aria-label="Map of San Francisco streets"></canvas>
+    <div id="photoPinsLayer" aria-hidden="true"></div>
+  </div>
+  <div id="help" class="help-wrap">
+    <button type="button" id="helpBtn" aria-label="Show help" aria-expanded="false">?</button>
+    <div id="helpTooltip" role="tooltip" aria-hidden="true">
+      <p><strong>What?</strong> Chronicling my progress walking around SF.</p>
+      <p><strong>Why?</strong> I like walking around!</p>
+      <p><strong>How?</strong> Smartwatch data + some code.</p>
+    </div>
+  </div>
+  <div class="map-controls">
+    <div id="compass" aria-hidden="true" title="Drag to rotate map (North)" role="img" aria-label="North">
+      <svg class="compass-icon" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="12 2 19 21 12 17 5 21 12 2"/></svg>
+    </div>
+    <div id="zoom" role="group" aria-label="Zoom controls">
+      <button type="button" id="zoomIn" aria-label="Zoom in">+</button>
+      <button type="button" id="zoomOut" aria-label="Zoom out">−</button>
+      <button type="button" id="zoomReset" aria-label="Reset zoom">⌂</button>
+    </div>
+  </div>
+  <div id="footerStats">
+    <div id="completion" aria-live="polite">__OVERALL_PCT__</div>
+    <div id="updated">__LAST_UPDATED_TIMESTAMP__</div>
+  </div>
+  <div id="ruler" aria-hidden="true">
+    <div id="rulerLat" class="ruler-axis ruler-lat">
+      <div class="ruler-line"></div>
+      <div id="rulerLatLabels" class="ruler-labels"></div>
+    </div>
+    <div id="rulerLon" class="ruler-axis ruler-lon">
+      <div class="ruler-line"></div>
+      <div id="rulerLonLabels" class="ruler-labels"></div>
+    </div>
+  </div>
+  <div id="scaleCompass" class="scale-compass-wrap">
+    <div id="scale" aria-hidden="true">
+      <span id="scaleBar"></span>
+      <span id="scaleLabel"></span>
+    </div>
+  </div>
+  <div id="nbdTooltip" role="tooltip" aria-hidden="true"></div>
+  <div id="photoModal" role="dialog" aria-modal="true" aria-label="Photo" aria-hidden="true">
+    <div class="photo-modal-card">
+      <div class="photo-modal-image-wrap" id="photoModalImageWrap">
+        <div class="photo-modal-skeleton" aria-hidden="true"></div>
+        <img id="photoModalImg" alt="" />
+      </div>
+      <span class="photo-modal-date"></span>
+      <span class="photo-modal-coords"></span>
+    </div>
+  </div>
+  <script src="/static/index.js"></script>
+</body>
+
+</html>

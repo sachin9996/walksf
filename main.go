@@ -15,6 +15,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -623,7 +624,16 @@ func main() {
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
-	if err := httpSrv.ListenAndServe(); err != nil {
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+	go func() {
+		<-sigCh
+		slog.Info("received SIGINT, shutting down")
+		httpSrv.Close()
+	}()
+
+	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		slog.Error("server", "err", err)
 		os.Exit(1)
 	}

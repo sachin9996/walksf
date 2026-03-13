@@ -955,20 +955,20 @@ function closePhotoModal() {
 function updateTooltipAt(n, tipLeft, tipTop, overPhoto) {
   const tip = document.getElementById("nbdTooltip");
   if (n && !overPhoto) {
-    tip.innerHTML =
-      "<strong>" +
-      (n.name || "") +
-      "</strong><br>" +
-      "Total: " +
-      (n.total_km != null ? n.total_km.toFixed(2) : "—") +
-      " km<br>" +
-      "Explored: " +
-      (n.explored_km != null ? n.explored_km.toFixed(2) : "—") +
-      " km<br>" +
-      "Unexplored: " +
-      (n.unexplored_km != null ? n.unexplored_km.toFixed(2) : "—") +
-      " km<br>" +
-      (n.pct != null ? n.pct.toFixed(1) + "% explored" : "");
+    tip.textContent = "";
+    const strong = document.createElement("strong");
+    strong.textContent = n.name || "";
+    tip.appendChild(strong);
+    const lines = [
+      "Total: " + (n.total_km != null ? n.total_km.toFixed(2) : "—") + " km",
+      "Explored: " + (n.explored_km != null ? n.explored_km.toFixed(2) : "—") + " km",
+      "Unexplored: " + (n.unexplored_km != null ? n.unexplored_km.toFixed(2) : "—") + " km",
+    ];
+    if (n.pct != null) lines.push(n.pct.toFixed(1) + "% explored");
+    for (const line of lines) {
+      tip.appendChild(document.createElement("br"));
+      tip.appendChild(document.createTextNode(line));
+    }
     tip.style.left = tipLeft + "px";
     tip.style.top = tipTop + "px";
     tip.classList.add("visible");

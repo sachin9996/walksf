@@ -10,12 +10,12 @@ Neighborhood GeoJSON comes from [SF Open Data](https://data.sfgov.org/resource/g
 
 ```bash
 make
-./sfwalkpercent -addr=:8080
+./sfwalkpercent -addr=127.0.0.1:8080
 ```
 
 ## Flags
 
-- `-addr` — listen address (default: `:8080`)
+- `-addr` — listen address (default: `127.0.0.1:8080`)
 
 ## Notes for me because I'm forgetful
 

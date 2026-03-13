@@ -46,7 +46,7 @@ var streets []streetFeat
 var nbds []nbdFeat
 
 var (
-	addr  = flag.String("addr", ":8080", "listen address")
+	addr  = flag.String("addr", "127.0.0.1:8080", "listen address")
 	debug = flag.Bool("debug", false, "enable debug logging")
 )
 
@@ -342,6 +342,7 @@ func (s *Server) tick() {
 		return
 	}
 	exportTime := zipExportTime(z, stat.ModTime())
+	s.updated.Store(exportTime.UnixMilli())
 	paths, err := buildPathsFromZip(z)
 	f.Close()
 	if err != nil {
@@ -368,13 +369,6 @@ func (s *Server) tick() {
 		return
 	}
 	s.paths.Store(&processed)
-	raw, err := json.Marshal(paths)
-	if err != nil {
-		slog.Error("marshal raw paths", "err", err)
-		return
-	}
-	s.rawPaths.Store(&raw)
-	s.updated.Store(exportTime.UnixMilli())
 	slog.Debug("tick", "step", "marshal_store", "duration_ms", time.Since(t0).Milliseconds())
 
 	t0 = time.Now()
@@ -394,6 +388,50 @@ func (s *Server) tick() {
 	}
 	slog.Debug("tick", "step", "images", "duration_ms", time.Since(t0).Milliseconds())
 	slog.Debug("tick", "step", "done", "duration_ms", time.Since(start).Milliseconds(), "zip", best)
+}
+
+func registerImageRoutes(rootDir, urlPrefix string) {
+	count := 0
+	filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		var ct string
+		switch strings.ToLower(filepath.Ext(d.Name())) {
+		case ".jpg", ".jpeg":
+			ct = "image/jpeg"
+		case ".png":
+			ct = "image/png"
+		case ".svg":
+			ct = "image/svg+xml"
+		case ".gif":
+			ct = "image/gif"
+		case ".webp":
+			ct = "image/webp"
+		case ".ico":
+			ct = "image/x-icon"
+		default:
+			return nil
+		}
+		rel, err := filepath.Rel(rootDir, path)
+		if err != nil {
+			return nil
+		}
+		route := urlPrefix + filepath.ToSlash(rel)
+		filePath := path
+		http.HandleFunc(route, func(w http.ResponseWriter, r *http.Request) {
+			b, err := os.ReadFile(filePath)
+			if err != nil {
+				http.Error(w, "not found", 404)
+				return
+			}
+			w.Header().Set("Content-Type", ct)
+			w.Write(b)
+		})
+		count++
+		return nil
+	})
+	slog.Debug("registered image routes", "dir", rootDir, "count", count)
 }
 
 func main() {
@@ -473,17 +511,6 @@ func main() {
 		gz.Write(body)
 		gz.Close()
 	})
-	http.HandleFunc("/api/debug/raw-paths", func(w http.ResponseWriter, r *http.Request) {
-		body := []byte("[]")
-		if p := srv.rawPaths.Load(); p != nil {
-			body = *p
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Content-Encoding", "gzip")
-		gz := gzip.NewWriter(w)
-		gz.Write(body)
-		gz.Close()
-	})
 	http.HandleFunc("/api/neighborhoods", func(w http.ResponseWriter, r *http.Request) {
 		body := []byte(`{"neighborhoods":[],"features":[]}`)
 		if p := srv.nbds.Load(); p != nil && len(p.Bytes) > 0 {
@@ -509,10 +536,6 @@ func main() {
 		gz.Write(body)
 		gz.Close()
 	})
-	imagesFullDir := filepath.Join(staticDir, "images", "full")
-	http.Handle("/static/images/full/", http.StripPrefix("/static/images/full", http.FileServer(http.Dir(imagesFullDir))))
-	imagesThumbDir := filepath.Join(staticDir, "images", "thumb")
-	http.Handle("/static/images/thumb/", http.StripPrefix("/static/images/thumb", http.FileServer(http.Dir(imagesThumbDir))))
 	http.HandleFunc("/api/streets", func(w http.ResponseWriter, r *http.Request) {
 		body := []byte("[]")
 		if b := srv.streetsBody.Load(); b != nil {
@@ -545,15 +568,6 @@ func main() {
 		gz := gzip.NewWriter(w)
 		gz.Write(body)
 		gz.Close()
-	})
-	http.HandleFunc("/static/images/favicon.svg", func(w http.ResponseWriter, r *http.Request) {
-		b, err := os.ReadFile(filepath.Join(staticDir, "images/favicon.svg"))
-		if err != nil {
-			http.Error(w, "not found", 404)
-			return
-		}
-		w.Header().Set("Content-Type", "image/svg+xml; charset=utf-8")
-		w.Write(b)
 	})
 	http.HandleFunc("/static/index.css", func(w http.ResponseWriter, r *http.Request) {
 		b, err := os.ReadFile(filepath.Join(staticDir, "index.css"))
@@ -588,8 +602,28 @@ func main() {
 		}
 	})
 
+	registerImageRoutes(filepath.Join(staticDir, "images"), "/static/images/")
+
+	mux := http.DefaultServeMux
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Cache-Control", "public, max-age=600")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		h.Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'")
+		mux.ServeHTTP(w, r)
+	})
+
 	slog.Info("listening", "addr", *addr)
-	if err := http.ListenAndServe(*addr, nil); err != nil {
+	httpSrv := &http.Server{
+		Addr:         *addr,
+		Handler:      handler,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+	if err := httpSrv.ListenAndServe(); err != nil {
 		slog.Error("server", "err", err)
 		os.Exit(1)
 	}

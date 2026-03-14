@@ -392,6 +392,22 @@ func (s *Server) tick() {
 }
 
 func (s *Server) registerStaticRoutes(staticDir string) {
+	var pctNum, explKm, totalKm, pctFrac string
+	if st := s.nbds.Load(); st != nil && len(st.List) > 0 {
+		var total, expl float64
+		for _, row := range st.List {
+			total += row.Total
+			expl += row.Expl
+		}
+		if total > 0 {
+			frac := expl / total
+			pctNum = fmt.Sprintf("%.1f", math.Round(frac*1000)/10)
+			explKm = fmt.Sprintf("%.1f", expl)
+			totalKm = fmt.Sprintf("%.1f", total)
+			pctFrac = fmt.Sprintf("%.4g", frac)
+		}
+	}
+
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -408,24 +424,33 @@ func (s *Server) registerStaticRoutes(staticDir string) {
 			updatedText = []byte("Last updated " + time.UnixMilli(ts).Format(time.RFC822Z))
 		}
 		html := bytes.Replace(tmpl, []byte("__LAST_UPDATED_TIMESTAMP__"), updatedText, 1)
-		var pctText []byte
-		if st := s.nbds.Load(); st != nil && len(st.List) > 0 {
-			var total, expl float64
-			for _, row := range st.List {
-				total += row.Total
-				expl += row.Expl
-			}
-			if total > 0 {
-				pct := 100 * expl / total
-				pctText = []byte(fmt.Sprintf("%.1f%% complete (%.1f/%.1f km)", math.Round(pct*10)/10, expl, total))
-			}
-		}
-		html = bytes.Replace(html, []byte("__OVERALL_PCT__"), pctText, 1)
+		html = bytes.Replace(html, []byte("__EXPL_PCT__"), []byte(pctNum), 1)
+		html = bytes.Replace(html, []byte("__EXPL_KM__"), []byte(explKm), 1)
+		html = bytes.Replace(html, []byte("__TOTAL_KM__"), []byte(totalKm), 1)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(html)
 	})
-	serveStaticFile("/static/index.css", filepath.Join(staticDir, "index.css"), "text/css; charset=utf-8", true)
+
+	http.HandleFunc("/static/index.css", func(w http.ResponseWriter, r *http.Request) {
+		b, err := os.ReadFile(filepath.Join(staticDir, "index.css"))
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		b = bytes.Replace(b, []byte("__EXPL_FRACTION__"), []byte(pctFrac), 1)
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			w.Header().Set("Content-Encoding", "gzip")
+			gz := gzip.NewWriter(w)
+			gz.Write(b)
+			gz.Close()
+		} else {
+			w.Write(b)
+		}
+	})
+
 	serveStaticFile("/static/index.js", filepath.Join(staticDir, "index.js"), "application/javascript; charset=utf-8", true)
+
 	registerImageRoutes(filepath.Join(staticDir, "images"), "/static/images/")
 }
 

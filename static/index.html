@@ -40,7 +40,10 @@
       aria-label="View on GitHub">
       <img src="/static/images/github.svg" alt="" class="footer-github-icon" aria-hidden="true">
     </a>
-    <div id="completion" aria-live="polite">__OVERALL_PCT__</div>
+    <div class="completion-line">
+      <span id="completion" aria-live="polite">__EXPL_PCT__% complete</span>
+      <span class="completion-km">(__EXPL_KM__/__TOTAL_KM__ km)</span>
+    </div>
     <div id="updated">__LAST_UPDATED_TIMESTAMP__</div>
   </div>
   <div id="ruler" aria-hidden="true">

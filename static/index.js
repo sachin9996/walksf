@@ -106,7 +106,6 @@ const activePointers = new Map();
 let twoFingerState = null;
 const ROTATE_ANGLE_THRESHOLD = 0.035;
 const ROTATE_VS_ZOOM_RATIO = 2;
-// Set window.__rotateDebug = true in the console to log two-finger rotate/zoom events.
 let compassDrag = false;
 const NBD_TOOLTIP_DELAY_MS = 140;
 let nbdTooltipDelayTimeout = null;
@@ -1016,7 +1015,7 @@ function clearTwoFingerAndHover() {
 const mapWrap = document.getElementById("mapWrap");
 
 function onMapPointerDown(e) {
-  if (mapWrap && !mapWrap.contains(e.target)) return;
+  if (!mapWrap.contains(e.target)) return;
   const onPin = e.target.closest && e.target.closest(".photo-pin");
   activePointers.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
   const singlePointerOnPin = activePointers.size === 1 && onPin && e.pointerType !== "touch";
@@ -1025,19 +1024,8 @@ function onMapPointerDown(e) {
     clearTimeout(nbdTooltipDelayTimeout);
     nbdTooltipDelayTimeout = null;
   }
-  if (window.__rotateDebug) {
-    console.log(
-      "[rotate] pointerdown",
-      "pointerId",
-      e.pointerId,
-      "activeCount",
-      activePointers.size,
-      "pointerType",
-      e.pointerType,
-    );
-  }
-  const captureEl = mapWrap || canvas;
-  if (!singlePointerOnPin && captureEl.setPointerCapture) captureEl.setPointerCapture(e.pointerId);
+
+  if (!singlePointerOnPin && mapWrap.setPointerCapture) mapWrap.setPointerCapture(e.pointerId);
   zoomTarget = null;
   if (activePointers.size === 2) {
     drag = null;
@@ -1045,15 +1033,6 @@ function onMapPointerDown(e) {
     const g = twoPointerGeometry();
     if (g) {
       twoFingerState = { gestureMode: null, lastDist: g.d, lastAngle: g.angle };
-      if (window.__rotateDebug) {
-        console.log(
-          "[rotate] two-finger start",
-          "dist",
-          g.d.toFixed(0),
-          "angleDeg",
-          ((g.angle * 180) / Math.PI).toFixed(1),
-        );
-      }
     }
   } else if (activePointers.size === 1) {
     twoFingerState = null;
@@ -1082,21 +1061,17 @@ function onMapPointerDown(e) {
 }
 
 function onMapPointerMove(e) {
-  if (mapWrap && !mapWrap.contains(e.target)) return;
+  if (!mapWrap.contains(e.target)) return;
   activePointers.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
   const rect = canvas.getBoundingClientRect();
   const w = canvas.clientWidth,
     h = canvas.clientHeight;
   if (activePointers.size === 2) {
-    if (window.__rotateDebug && !twoFingerState) {
-      console.log("[rotate] pointermove with 2 pointers but no twoFingerState");
-    }
     if (twoFingerState) {
       e.preventDefault();
       markViewChanged();
       const g = twoPointerGeometry();
       if (!g) {
-        if (window.__rotateDebug) console.log("[rotate] pointermove 2 pointers but twoPointerGeometry() null");
         return;
       }
       const { cx, cy, d, angle: currentAngle } = g;
@@ -1112,17 +1087,8 @@ function onMapPointerMove(e) {
           Math.abs(deltaAngleNorm) > ROTATE_VS_ZOOM_RATIO * Math.abs(deltaDistRatio)
         ) {
           twoFingerState.gestureMode = "rotate";
-          if (window.__rotateDebug)
-            console.log(
-              "[rotate] gesture locked",
-              "rotate",
-              "deltaAngleDeg",
-              ((deltaAngleNorm * 180) / Math.PI).toFixed(2),
-            );
         } else {
           twoFingerState.gestureMode = "zoom";
-          if (window.__rotateDebug)
-            console.log("[rotate] gesture locked", "zoom", "deltaDistRatio", deltaDistRatio.toFixed(3));
         }
       }
       if (twoFingerState.gestureMode === "zoom") {
@@ -1131,14 +1097,6 @@ function onMapPointerMove(e) {
       } else {
         const deltaAngle = currentAngle - twoFingerState.lastAngle;
         angle += deltaAngle;
-        if (window.__rotateDebug)
-          console.log(
-            "[rotate] apply",
-            "deltaDeg",
-            ((deltaAngle * 180) / Math.PI).toFixed(2),
-            "totalAngleDeg",
-            ((angle * 180) / Math.PI).toFixed(2),
-          );
         if (k !== 1) applyZoomAt(canvasCx, canvasCy, k);
         twoFingerState.lastDist = d;
         twoFingerState.lastAngle = currentAngle;
@@ -1196,12 +1154,11 @@ function onPointerUp(e) {
   }
 }
 
-const pointerTarget = mapWrap || canvas;
-pointerTarget.addEventListener("pointerdown", onMapPointerDown);
-pointerTarget.addEventListener("pointermove", onMapPointerMove);
-pointerTarget.addEventListener("pointerup", onPointerUp);
-pointerTarget.addEventListener("pointercancel", onPointerUp);
-pointerTarget.addEventListener("pointerleave", function () {
+mapWrap.addEventListener("pointerdown", onMapPointerDown);
+mapWrap.addEventListener("pointermove", onMapPointerMove);
+document.addEventListener("pointerup", onPointerUp);
+document.addEventListener("pointercancel", onPointerUp);
+mapWrap.addEventListener("pointerleave", function () {
   if (!twoFingerState) {
     if (!compassDrag) canvas.style.cursor = "";
     if (hoverNbd) {
@@ -1406,14 +1363,13 @@ async function init() {
   const compassEl = document.getElementById("compass");
   if (compassEl) {
     compassEl.addEventListener("pointerdown", function (e) {
-      if (e.pointerType !== "mouse") return;
       e.preventDefault();
       compassEl.setPointerCapture(e.pointerId);
       compassDrag = true;
       compassEl.classList.add("compass-dragging");
     });
     compassEl.addEventListener("pointermove", function (e) {
-      if (!compassDrag || e.pointerType !== "mouse") return;
+      if (!compassDrag) return;
       const r = compassEl.getBoundingClientRect();
       const cx = r.left + r.width / 2;
       const cy = r.top + r.height / 2;
@@ -1422,12 +1378,10 @@ async function init() {
       scheduleDraw();
     });
     compassEl.addEventListener("pointerup", function (e) {
-      if (e.pointerType !== "mouse") return;
       compassDrag = false;
       compassEl.classList.remove("compass-dragging");
     });
     compassEl.addEventListener("pointercancel", function (e) {
-      if (e.pointerType !== "mouse") return;
       compassDrag = false;
       compassEl.classList.remove("compass-dragging");
     });

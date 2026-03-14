@@ -65,6 +65,10 @@ body {
   filter: brightness(1.15);
 }
 
+#photoPinsLayer .photo-pin:focus-visible {
+  outline: none;
+}
+
 #ruler {
   position: fixed;
   left: 0;
@@ -317,6 +321,12 @@ body {
   transition: opacity 0.2s ease;
   transform-origin: center center;
   border-radius: 4px;
+}
+
+@media (pointer: coarse), (max-width: 768px) {
+  #compass {
+    display: none;
+  }
 }
 
 #compass:hover .compass-icon {

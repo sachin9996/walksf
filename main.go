@@ -277,6 +277,9 @@ func zipExportTime(z *zip.Reader, fallback time.Time) time.Time {
 
 func (s *Server) tick() {
 	start := time.Now()
+	defer func() {
+		slog.Debug("tick", "step", "done", "duration_ms", time.Since(start).Milliseconds())
+	}()
 
 	dir := os.DirFS(dataDir)
 	t0 := time.Now()
@@ -405,7 +408,6 @@ func (s *Server) tick() {
 		s.photos.Store(&photoData{Photos: nil})
 	}
 	slog.Debug("tick", "step", "images", "duration_ms", time.Since(t0).Milliseconds())
-	slog.Debug("tick", "step", "done", "duration_ms", time.Since(start).Milliseconds(), "zip", zipFile)
 }
 
 func (s *Server) registerStaticRoutes(staticDir string) {

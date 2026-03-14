@@ -133,10 +133,7 @@ type photoData struct {
 }
 
 type Server struct {
-	paths atomic.Pointer[[]byte]
-	nbds  atomic.Pointer[nbdStats]
-
-	streetsBody     atomic.Pointer[[]byte]
+	streetsBody     []byte
 	drawCoreBody    atomic.Pointer[[]byte]
 	drawOverlayBody atomic.Pointer[[]byte]
 
@@ -145,11 +142,11 @@ type Server struct {
 	explPct  atomic.Pointer[string]
 	explFrac atomic.Pointer[string]
 
-	photos atomic.Pointer[photoData]
+	nbdStats atomic.Pointer[nbdStats]
+	paths    atomic.Pointer[[]byte]
+	photos   atomic.Pointer[photoData]
 
-	updated   atomic.Int64
-	lastZip   string
-	lastPaths atomic.Pointer[[]pathFeature]
+	updateTime atomic.Int64
 }
 
 func (s *Server) storeDrawPayload(pathFeats []streetFeat, st *nbdStats) {
@@ -203,7 +200,7 @@ func newServer() (*Server, error) {
 	fc := map[string]any{"type": "FeatureCollection", "features": streets}
 	body, err := json.Marshal(fc)
 	if err == nil {
-		s.streetsBody.Store(&body)
+		s.streetsBody = body
 	}
 	s.storeDrawPayload(nil, nil)
 	s.photos.Store(&photoData{Photos: nil})
@@ -218,7 +215,7 @@ func newServer() (*Server, error) {
 			nbds = nbdDoc.Features
 			slog.Debug("startup", "step", "load_neighborhoods", "duration_ms", time.Since(t0).Milliseconds(), "count", len(nbds))
 			if st := computeNbdStats(nil); st != nil {
-				s.nbds.Store(st)
+				s.nbdStats.Store(st)
 				s.storeDrawPayload(nil, st)
 			}
 		}
@@ -293,8 +290,8 @@ func (s *Server) tick() {
 		slog.Warn("no export zip in data dir", "dir", dataDir)
 		return
 	}
-	var best string
-	var bestTime time.Time
+	var zipFile string
+	var latestZipTime time.Time
 	t0 = time.Now()
 	for _, e := range entries {
 		path := filepath.Join(dataDir, e)
@@ -302,51 +299,55 @@ func (s *Server) tick() {
 		if openErr != nil {
 			continue
 		}
+		defer f.Close()
 		stat, statErr := f.Stat()
 		if statErr != nil {
-			f.Close()
+			slog.Error("failed to stat", "file", path)
 			continue
 		}
 		z, zipErr := zip.NewReader(f, stat.Size())
 		if zipErr != nil {
-			f.Close()
+			slog.Error("failed to open zip reader", "file", path)
 			continue
 		}
 		t := zipExportTime(z, stat.ModTime())
-		f.Close()
-		if t.After(bestTime) {
-			bestTime = t
-			best = e
+		if t.After(latestZipTime) {
+			latestZipTime = t
+			zipFile = e
 		}
 	}
-	if best == "" || best == s.lastZip {
-		return
+
+	latest := latestZipTime.UnixMilli()
+	for {
+		curr := s.updateTime.Load()
+		if latest <= curr {
+			return
+		}
+		if s.updateTime.CompareAndSwap(curr, latest) {
+			break
+		}
 	}
-	slog.Debug("tick", "step", "zip_select", "duration_ms", time.Since(t0).Milliseconds(), "zip", best)
-	s.lastZip = best
-	path := filepath.Join(dataDir, best)
+
+	slog.Debug("tick", "step", "zip_select", "duration_ms", time.Since(t0).Milliseconds(), "zip", zipFile)
+	path := filepath.Join(dataDir, zipFile)
 	t0 = time.Now()
 	f, err := os.Open(path)
 	if err != nil {
 		slog.Error("open zip", "path", path, "err", err)
 		return
 	}
+	defer f.Close()
 	stat, err := f.Stat()
 	if err != nil {
-		f.Close()
 		slog.Error("stat zip", "path", path, "err", err)
 		return
 	}
 	z, err := zip.NewReader(f, stat.Size())
 	if err != nil {
-		f.Close()
 		slog.Error("zip reader", "path", path, "err", err)
 		return
 	}
-	exportTime := zipExportTime(z, stat.ModTime())
-	s.updated.Store(exportTime.UnixMilli())
 	paths, err := buildPathsFromZip(z)
-	f.Close()
 	if err != nil {
 		slog.Error("build paths", "path", path, "err", err)
 		return
@@ -376,7 +377,7 @@ func (s *Server) tick() {
 	t0 = time.Now()
 	st := computeNbdStats(visitedSegs)
 	if st != nil {
-		s.nbds.Store(st)
+		s.nbdStats.Store(st)
 	}
 
 	if st != nil && len(st.List) > 0 {
@@ -395,7 +396,6 @@ func (s *Server) tick() {
 	}
 
 	s.storeDrawPayload(visitedList, st)
-	s.lastPaths.Store(&paths)
 	slog.Debug("tick", "step", "nbd_and_draw", "duration_ms", time.Since(t0).Milliseconds())
 
 	t0 = time.Now()
@@ -405,7 +405,7 @@ func (s *Server) tick() {
 		s.photos.Store(&photoData{Photos: nil})
 	}
 	slog.Debug("tick", "step", "images", "duration_ms", time.Since(t0).Milliseconds())
-	slog.Debug("tick", "step", "done", "duration_ms", time.Since(start).Milliseconds(), "zip", best)
+	slog.Debug("tick", "step", "done", "duration_ms", time.Since(start).Milliseconds(), "zip", zipFile)
 }
 
 func (s *Server) registerStaticRoutes(staticDir string) {
@@ -421,7 +421,7 @@ func (s *Server) registerStaticRoutes(staticDir string) {
 		}
 
 		var updatedText []byte
-		if ts := s.updated.Load(); ts != 0 {
+		if ts := s.updateTime.Load(); ts != 0 {
 			updatedText = []byte("Last updated " + time.UnixMilli(ts).Format(time.RFC822Z))
 		}
 		html := bytes.Replace(tmpl, []byte("__LAST_UPDATED_TIMESTAMP__"), updatedText, 1)
@@ -515,7 +515,6 @@ func registerImageRoutes(rootDir, urlPrefix string) {
 		count++
 		return nil
 	})
-	slog.Debug("registered image routes", "dir", rootDir, "count", count)
 }
 
 func main() {
@@ -560,7 +559,7 @@ func main() {
 	})
 	http.HandleFunc("/api/neighborhoods", func(w http.ResponseWriter, r *http.Request) {
 		body := []byte(`{"neighborhoods":[],"features":[]}`)
-		if p := srv.nbds.Load(); p != nil && len(p.Bytes) > 0 {
+		if p := srv.nbdStats.Load(); p != nil && len(p.Bytes) > 0 {
 			body = p.Bytes
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -585,8 +584,8 @@ func main() {
 	})
 	http.HandleFunc("/api/streets", func(w http.ResponseWriter, r *http.Request) {
 		body := []byte("[]")
-		if b := srv.streetsBody.Load(); b != nil {
-			body = *b
+		if srv.streetsBody != nil {
+			body = srv.streetsBody
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("Content-Encoding", "gzip")

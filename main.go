@@ -427,7 +427,7 @@ func (s *Server) registerStaticRoutes(staticDir string) {
 			updatedText = []byte("Last updated " + time.UnixMilli(ts).Format(time.RFC822Z))
 		}
 		html := bytes.Replace(tmpl, []byte("__LAST_UPDATED_TIMESTAMP__"), updatedText, 1)
-		html = bytes.Replace(html, []byte("__EXPL_PCT__"), []byte(*s.explPct.Load()), 1)
+		html = bytes.Replace(html, []byte("__EXPL_PCT__"), []byte(*s.explPct.Load()), -1)
 		html = bytes.Replace(html, []byte("__EXPL_KM__"), []byte(*s.explKm.Load()), 1)
 		html = bytes.Replace(html, []byte("__TOTAL_KM__"), []byte(*s.totalKm.Load()), 1)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")

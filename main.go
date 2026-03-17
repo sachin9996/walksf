@@ -511,6 +511,7 @@ func registerImageRoutes(rootDir, urlPrefix string) {
 				http.Error(w, "not found", 404)
 				return
 			}
+			w.Header().Set("Cache-Control", "public, max-age=604800")
 			w.Header().Set("Content-Type", ct)
 			w.Write(b)
 		})
@@ -622,11 +623,7 @@ func main() {
 	mux := http.DefaultServeMux
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		if strings.HasPrefix(r.URL.Path, "/static/images/") {
-			h.Set("Cache-Control", "public, max-age=604800")
-		} else {
-			h.Set("Cache-Control", "public, max-age=600")
-		}
+		h.Set("Cache-Control", "public, max-age=600")
 		h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")

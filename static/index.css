@@ -136,7 +136,16 @@ body {
   position: absolute;
   right: 3px;
   transform: translateY(-50%);
+  rotate: 90deg;
   white-space: nowrap;
+}
+
+#ruler .ruler-lat .ruler-tick {
+  position: absolute;
+  right: 0;
+  width: 6px;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.25);
 }
 
 #ruler .ruler-lon .ruler-labels span {
@@ -144,6 +153,14 @@ body {
   top: 3px;
   transform: translateX(-50%);
   white-space: nowrap;
+}
+
+#ruler .ruler-lon .ruler-tick {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.25);
 }
 
 #help {

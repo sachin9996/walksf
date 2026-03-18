@@ -537,7 +537,7 @@ function formatCoord(value, step) {
   if (step >= 0.01) {
     return value.toFixed(2);
   }
-  return value.toFixed(3).replace(/^\d+\./, ".");
+  return value.toFixed(3);
 }
 
 function updateRuler(w, h) {
@@ -560,12 +560,20 @@ function updateRuler(w, h) {
 
   const latLabelsEl = document.getElementById("rulerLatLabels");
   const lonLabelsEl = document.getElementById("rulerLonLabels");
+  const latAxisEl = document.getElementById("rulerLat");
+  const lonAxisEl = document.getElementById("rulerLon");
   if (!latLabelsEl || !lonLabelsEl) {
     return;
   }
 
   latLabelsEl.textContent = "";
   lonLabelsEl.textContent = "";
+  if (latAxisEl) {
+    latAxisEl.querySelectorAll(".ruler-tick").forEach((el) => el.remove());
+  }
+  if (lonAxisEl) {
+    lonAxisEl.querySelectorAll(".ruler-tick").forEach((el) => el.remove());
+  }
 
   const leftX0 = p00.x,
     leftY0 = p00.y,
@@ -585,6 +593,12 @@ function updateRuler(w, h) {
         span.textContent = formatCoord(lat, stepLat) + " N";
         span.style.top = canvasPt.y + "px";
         latLabelsEl.appendChild(span);
+        if (latAxisEl) {
+          const tick = document.createElement("div");
+          tick.className = "ruler-tick";
+          tick.style.top = canvasPt.y + "px";
+          latAxisEl.appendChild(tick);
+        }
       }
     }
     lat -= stepLat;
@@ -608,6 +622,12 @@ function updateRuler(w, h) {
         span.textContent = formatCoord(lon, stepLon) + " W";
         span.style.left = canvasPt.x - RULER_LEFT_INSET + "px";
         lonLabelsEl.appendChild(span);
+        if (lonAxisEl) {
+          const tick = document.createElement("div");
+          tick.className = "ruler-tick";
+          tick.style.left = canvasPt.x - RULER_LEFT_INSET + "px";
+          lonAxisEl.appendChild(tick);
+        }
       }
     }
     lon += stepLon;

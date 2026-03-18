@@ -520,6 +520,23 @@ func registerImageRoutes(rootDir, urlPrefix string) {
 	})
 }
 
+type responseWriter struct {
+	http.ResponseWriter
+	status       int
+	bytesWritten int64
+}
+
+func (w *responseWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *responseWriter) Write(p []byte) (n int, err error) {
+	n, err = w.ResponseWriter.Write(p)
+	w.bytesWritten += int64(n)
+	return n, err
+}
+
 func main() {
 	flag.Parse()
 	if *debug {
@@ -622,7 +639,12 @@ func main() {
 
 	mux := http.DefaultServeMux
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h := w.Header()
+		start := time.Now()
+		rw := &responseWriter{ResponseWriter: w, status: 200}
+		defer func() {
+			slog.Debug("request", "method", r.Method, "path", r.URL.Path, "status", rw.status, "bytes", rw.bytesWritten, "duration_ms", time.Since(start).Milliseconds())
+		}()
+		h := rw.Header()
 		h.Set("Cache-Control", "public, max-age=600")
 		h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		h.Set("X-Content-Type-Options", "nosniff")
@@ -632,10 +654,10 @@ func main() {
 		h.Set("Permissions-Policy", "camera=(), geolocation=(), microphone=(), payment=(), usb=()")
 		h.Set("Content-Security-Policy", "default-src 'none'; base-uri 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'")
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			http.Error(rw, "Method Not Allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		mux.ServeHTTP(w, r)
+		mux.ServeHTTP(rw, r)
 	})
 
 	slog.Info("listening", "addr", *addr)

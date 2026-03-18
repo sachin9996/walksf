@@ -4,6 +4,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"encoding/xml"
@@ -132,6 +134,28 @@ type photoData struct {
 	Photos []photoRecord `json:"photos"`
 }
 
+type cache struct {
+	times map[string]time.Time
+	mu    sync.RWMutex
+}
+
+func newCache() *cache {
+	return &cache{times: make(map[string]time.Time)}
+}
+
+func (c *cache) Get(hash string) (time.Time, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	t, ok := c.times[hash]
+	return t, ok
+}
+
+func (c *cache) Set(hash string, t time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.times[hash] = t
+}
+
 type Server struct {
 	streetsBody     []byte
 	drawCoreBody    atomic.Pointer[[]byte]
@@ -147,6 +171,8 @@ type Server struct {
 	photos   atomic.Pointer[photoData]
 
 	updateTime atomic.Int64
+
+	cache *cache
 }
 
 func (s *Server) storeDrawPayload(pathFeats []streetFeat, st *nbdStats) {
@@ -165,6 +191,7 @@ func (s *Server) storeDrawPayload(pathFeats []streetFeat, st *nbdStats) {
 func newServer() (*Server, error) {
 	start := time.Now()
 	s := &Server{}
+	s.cache = newCache()
 
 	sfPath := filepath.Join(staticDir, "sf.geojson")
 	t0 := time.Now()
@@ -233,7 +260,20 @@ func newServer() (*Server, error) {
 	return s, nil
 }
 
-func zipExportTime(z *zip.Reader, fallback time.Time) time.Time {
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func zipExportTime(z *zip.Reader) (time.Time, error) {
 	const cdaPath = "apple_health_export/export_cda.xml"
 	var ef *zip.File
 	for _, f := range z.File {
@@ -243,11 +283,11 @@ func zipExportTime(z *zip.Reader, fallback time.Time) time.Time {
 		}
 	}
 	if ef == nil {
-		return fallback
+		return time.Time{}, fmt.Errorf("%q not found", cdaPath)
 	}
 	rc, err := ef.Open()
 	if err != nil {
-		return fallback
+		return time.Time{}, fmt.Errorf("open xml file: %w", err)
 	}
 	defer rc.Close()
 	var doc struct {
@@ -257,11 +297,11 @@ func zipExportTime(z *zip.Reader, fallback time.Time) time.Time {
 		} `xml:"urn:hl7-org:v3 effectiveTime"`
 	}
 	if err := xml.NewDecoder(rc).Decode(&doc); err != nil {
-		return fallback
+		return time.Time{}, fmt.Errorf("decode xml file: %w", err)
 	}
 	v := strings.TrimSpace(doc.EffectiveTime.Value)
 	if v == "" || len(v) < 14 {
-		return fallback
+		return time.Time{}, fmt.Errorf("invalid time format: %q", v)
 	}
 	var t time.Time
 	if len(v) >= 19 && (v[14] == '+' || v[14] == '-') {
@@ -270,9 +310,9 @@ func zipExportTime(z *zip.Reader, fallback time.Time) time.Time {
 		t, err = time.Parse("20060102150405", v[:14])
 	}
 	if err != nil {
-		return fallback
+		return time.Time{}, fmt.Errorf("parse time %q: %w", v, err)
 	}
-	return t
+	return t, nil
 }
 
 func (s *Server) tick() {
@@ -298,22 +338,39 @@ func (s *Server) tick() {
 	t0 = time.Now()
 	for _, e := range entries {
 		path := filepath.Join(dataDir, e)
-		f, openErr := os.Open(path)
-		if openErr != nil {
+		hash, err := fileSHA256(path)
+		if err != nil {
+			slog.Error("tick", "step", "hash", "file", e, "err", err)
 			continue
 		}
-		defer f.Close()
-		stat, statErr := f.Stat()
-		if statErr != nil {
-			slog.Error("failed to stat", "file", path)
-			continue
+		var t time.Time
+		var ok bool
+		t, ok = s.cache.Get(hash)
+		if !ok {
+			f, openErr := os.Open(path)
+			if openErr != nil {
+				continue
+			}
+			defer f.Close()
+			stat, statErr := f.Stat()
+			if statErr != nil {
+				slog.Error("failed to stat", "file", path)
+				continue
+			}
+			z, zipErr := zip.NewReader(f, stat.Size())
+			if zipErr != nil {
+				slog.Error("failed to open zip reader", "file", path)
+				continue
+			}
+			var dateErr error
+			t, dateErr = zipExportTime(z)
+			if dateErr != nil {
+				slog.Error("failed to get zip export time", "file", path, "err", dateErr)
+				continue
+			}
+			s.cache.Set(hash, t)
 		}
-		z, zipErr := zip.NewReader(f, stat.Size())
-		if zipErr != nil {
-			slog.Error("failed to open zip reader", "file", path)
-			continue
-		}
-		t := zipExportTime(z, stat.ModTime())
+
 		if t.After(latestZipTime) {
 			latestZipTime = t
 			zipFile = e

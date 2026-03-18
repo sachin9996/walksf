@@ -642,7 +642,37 @@ func main() {
 		start := time.Now()
 		rw := &responseWriter{ResponseWriter: w, status: 200}
 		defer func() {
-			slog.Debug("request", "method", r.Method, "path", r.URL.Path, "status", rw.status, "bytes", rw.bytesWritten, "duration_ms", time.Since(start).Milliseconds())
+			attrs := []any{
+				"method", r.Method,
+				"path", r.URL.Path,
+				"status", rw.status,
+				"bytes", rw.bytesWritten,
+				"duration_ms", time.Since(start).Milliseconds(),
+				"remote_addr", r.RemoteAddr,
+				"host", r.Host,
+			}
+			if v := r.Header.Get("CF-Connecting-IP"); v != "" {
+				attrs = append(attrs, "cf_connecting_ip", v)
+			}
+			if v := r.Header.Get("X-Forwarded-For"); v != "" {
+				attrs = append(attrs, "x_forwarded_for", v)
+			}
+			if v := r.Header.Get("User-Agent"); v != "" {
+				attrs = append(attrs, "user_agent", v)
+			}
+			if v := r.Header.Get("Referer"); v != "" {
+				attrs = append(attrs, "referer", v)
+			}
+			if v := r.Header.Get("Sec-Ch-Ua"); v != "" {
+				attrs = append(attrs, "sec_ch_ua", v)
+			}
+			if v := r.Header.Get("Sec-Ch-Ua-Mobile"); v != "" {
+				attrs = append(attrs, "sec_ch_ua_mobile", v)
+			}
+			if v := r.Header.Get("Sec-Ch-Ua-Platform"); v != "" {
+				attrs = append(attrs, "sec_ch_ua_platform", v)
+			}
+			slog.Debug("request", attrs...)
 		}()
 		h := rw.Header()
 		h.Set("Cache-Control", "public, max-age=600")

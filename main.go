@@ -1038,7 +1038,7 @@ func matchPathsToStreets(paths []pathFeature) ([]streetFeat, map[segmentKey]stru
 
 	n := len(streets)
 	visitedSegs := make(map[segmentKey]struct{})
-	var result []streetFeat
+	var feats []streetFeat
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	numWorkers := max(runtime.NumCPU(), 1)
@@ -1049,9 +1049,9 @@ func matchPathsToStreets(paths []pathFeature) ([]streetFeat, map[segmentKey]stru
 		if lo >= hi {
 			continue
 		}
-		wg.Add(1)
-		go func(lo, hi int) {
-			defer wg.Done()
+		wg.Go(func() {
+			var chunkFeats []streetFeat
+			chunkVis := make(map[segmentKey]struct{})
 			for si := lo; si < hi; si++ {
 				coords := streets[si].Geometry.Coordinates
 				for j := 0; j < len(coords)-1; j++ {
@@ -1064,19 +1064,23 @@ func matchPathsToStreets(paths []pathFeature) ([]streetFeat, map[segmentKey]stru
 					if grid.hasPoint(mid, segBearing) {
 						c0 := []float64{a[0], a[1]}
 						c1 := []float64{b[0], b[1]}
-						seg := streetFeat{}
-						seg.Geometry.Coordinates = [][]float64{c0, c1}
-						mu.Lock()
-						visitedSegs[segmentKey{si, j}] = struct{}{}
-						result = append(result, seg)
-						mu.Unlock()
+						ft := streetFeat{}
+						ft.Geometry.Coordinates = [][]float64{c0, c1}
+						chunkVis[segmentKey{si, j}] = struct{}{}
+						chunkFeats = append(chunkFeats, ft)
 					}
 				}
 			}
-		}(lo, hi)
+			mu.Lock()
+			for v := range chunkVis {
+				visitedSegs[v] = struct{}{}
+			}
+			feats = append(feats, chunkFeats...)
+			mu.Unlock()
+		})
 	}
 	wg.Wait()
-	return result, visitedSegs
+	return feats, visitedSegs
 }
 
 func pointInNbd(pt point, nbdPolys [][][]float64) bool {

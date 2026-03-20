@@ -26,7 +26,7 @@ Google Photos gives me HEIC files with location information. Transform them into
 
 ```
 for f in *.HEIC; do
-  magick "$f" -quality 92 "${f%.hHEICeic}.jpg"
+  magick "$f" -quality 92 "${f%.HEIC}.jpg"
   exiftool -TagsFromFile "$f" -all:all "${f%.HEIC}.jpg"
 done
 ```

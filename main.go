@@ -790,44 +790,75 @@ type pathFeature struct {
 }
 
 func buildPathsFromZip(z *zip.Reader) ([]pathFeature, error) {
-	var out []pathFeature
 	prefix := "apple_health_export/workout-routes/"
+	var files []*zip.File
 	for _, f := range z.File {
 		if !strings.HasPrefix(f.Name, prefix) || strings.ToLower(filepath.Ext(f.Name)) != ".gpx" {
 			continue
 		}
-		rc, err := f.Open()
-		if err != nil {
-			slog.Debug("skip gpx", "name", f.Name, "err", err)
-			continue
-		}
-		pts, err := parseGPX(rc)
-		rc.Close()
-		if err != nil {
-			slog.Debug("skip gpx", "name", f.Name, "err", err)
-			continue
-		}
-		if len(pts) < 2 {
-			continue
-		}
-		coords := make([][]float64, len(pts))
-		for i, p := range pts {
-			if p[2] != courseMissing {
-				coords[i] = []float64{p[0], p[1], p[2]}
-			} else {
-				coords[i] = []float64{p[0], p[1]}
+		files = append(files, f)
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no gpx files found")
+	}
+
+	ch := make(chan *zip.File, len(files))
+	for _, f := range files {
+		ch <- f
+	}
+	close(ch)
+
+	n := min(runtime.NumCPU(), len(files))
+	resCh := make(chan []pathFeature, n)
+	var wg sync.WaitGroup
+	for range n {
+		wg.Go(func() {
+			var out []pathFeature
+			for f := range ch {
+				rc, err := f.Open()
+				if err != nil {
+					slog.Error("skip gpx", "name", f.Name, "err", err)
+					continue
+				}
+				defer rc.Close()
+				pts, err := parseGPX(rc)
+				if err != nil {
+					slog.Error("skip gpx", "name", f.Name, "err", err)
+					continue
+				}
+				if len(pts) < 2 {
+					continue
+				}
+				coords := make([][]float64, len(pts))
+				for i, p := range pts {
+					if p[2] != courseMissing {
+						coords[i] = []float64{p[0], p[1], p[2]}
+					} else {
+						coords[i] = []float64{p[0], p[1]}
+					}
+				}
+				out = append(out, pathFeature{
+					Type: "Feature",
+					Geometry: pathGeometry{
+						Type:        "LineString",
+						Coordinates: coords,
+					},
+					Properties: map[string]any{},
+				})
 			}
-		}
-		out = append(out, pathFeature{
-			Type: "Feature",
-			Geometry: pathGeometry{
-				Type:        "LineString",
-				Coordinates: coords,
-			},
-			Properties: map[string]any{},
+			resCh <- out
 		})
 	}
-	return out, nil
+
+	wg.Wait()
+	close(resCh)
+
+	var res []pathFeature
+	for out := range resCh {
+		res = append(res, out...)
+	}
+
+	return res, nil
 }
 
 type gpxTrkPt struct {

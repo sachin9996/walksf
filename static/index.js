@@ -531,13 +531,14 @@ const RULER_NICE_STEPS = [0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.0
 const RULER_LEFT_INSET = 30;
 const RULER_BOTTOM_INSET = 25;
 
-function pickRulerStep(span) {
+function pickRulerStep(span, rulerSizePx) {
   if (span <= 0) {
     return 0.01;
   }
   let step = RULER_NICE_STEPS[0];
-  for (let i = 0; i < RULER_NICE_STEPS.length; i++) {
-    if (RULER_NICE_STEPS[i] <= span / 4) step = RULER_NICE_STEPS[i];
+  const threshold = rulerSizePx >= 768 ? span / 4 : span / 3;
+  for (const candidate of RULER_NICE_STEPS) {
+    if (candidate <= threshold) step = candidate;
   }
   return step;
 }
@@ -549,7 +550,13 @@ function formatCoord(value, step) {
   if (step >= 0.01) {
     return value.toFixed(2);
   }
-  return value.toFixed(3);
+  if (step >= 0.001) {
+    return value.toFixed(3);
+  }
+  if (step >= 0.0001) {
+    return value.toFixed(4);
+  }
+  return value.toFixed(5);
 }
 
 function updateRuler(w, h) {
@@ -567,8 +574,8 @@ function updateRuler(w, h) {
   const maxLat = (ty - minContentY) / scale;
   const spanLon = maxLon - minLon;
   const spanLat = maxLat - minLat;
-  const stepLon = pickRulerStep(spanLon);
-  const stepLat = pickRulerStep(spanLat);
+  const stepLon = pickRulerStep(spanLon, w - RULER_LEFT_INSET);
+  const stepLat = pickRulerStep(spanLat, h - RULER_BOTTOM_INSET);
 
   const latLabelsEl = document.getElementById("rulerLatLabels");
   const lonLabelsEl = document.getElementById("rulerLonLabels");

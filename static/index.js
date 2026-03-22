@@ -21,6 +21,7 @@ function isCoarsePointer() {
 }
 
 let photoTooltipEl = null;
+let hoverPhotoPinEl = null;
 
 function getPhotoTooltipEl() {
   if (photoTooltipEl) return photoTooltipEl;
@@ -45,11 +46,21 @@ function getPhotoTooltipEl() {
   return photoTooltipEl;
 }
 
+function positionPhotoTooltip() {
+  const tip = getPhotoTooltipEl();
+  if (!tip || tip.getAttribute("aria-hidden") === "true" || !hoverPhotoPinEl) return;
+  const r = hoverPhotoPinEl.getBoundingClientRect();
+  tip.style.left = r.left + r.width / 2 + "px";
+  tip.style.top = r.top + "px";
+  tip.style.transform = "translate3d(-50%, calc(-100% - 8px), 0)";
+}
+
 function showPhotoTooltip(photo, pinEl) {
   const tip = getPhotoTooltipEl();
   const img = tip ? tip.querySelector("img") : null;
   if (!tip || !img || !photo || !pinEl) return;
   hoverPhoto = photo;
+  hoverPhotoPinEl = pinEl;
   img.src = photo.thumb_url;
   img.alt = "Photo at location";
   const dateEl = tip.querySelector(".photo-tooltip-date");
@@ -60,22 +71,24 @@ function showPhotoTooltip(photo, pinEl) {
   } else if (coordsEl) {
     coordsEl.textContent = "";
   }
-  tip.style.left = "";
-  tip.style.top = "";
-  tip.style.bottom = "";
   tip.remove();
-  pinEl.appendChild(tip);
+  document.body.appendChild(tip);
   tip.setAttribute("aria-hidden", "false");
+  positionPhotoTooltip();
+  img.onload = img.onerror = function () {
+    positionPhotoTooltip();
+  };
 }
 
 function hidePhotoTooltip() {
   hoverPhoto = null;
+  hoverPhotoPinEl = null;
   const tip = getPhotoTooltipEl();
   if (tip) {
     tip.setAttribute("aria-hidden", "true");
     tip.style.left = "";
     tip.style.top = "";
-    tip.style.bottom = "";
+    tip.style.transform = "";
     const dateEl = tip.querySelector(".photo-tooltip-date");
     const coordsEl = tip.querySelector(".photo-tooltip-coords");
     if (dateEl) dateEl.textContent = "";
@@ -924,6 +937,13 @@ function updatePhotoPins() {
     }
     pin.style.transform = "translate3d(" + px + "px, " + py + "px, 0)";
   }
+  if (hoverPhoto && hoverPhotoPinEl) {
+    if (!hoverPhotoPinEl.isConnected) {
+      hidePhotoTooltip();
+    } else {
+      positionPhotoTooltip();
+    }
+  }
 }
 
 function pointerAt(clientX, clientY) {
@@ -986,8 +1006,16 @@ function closePhotoModal() {
   }
 }
 
+function hideNbdTooltip(el) {
+  const tip = el || document.getElementById("nbdTooltip");
+  if (!tip) return;
+  tip.classList.remove("visible");
+  tip.setAttribute("aria-hidden", "true");
+}
+
 function updateTooltipAt(n, tipLeft, tipTop, overPhoto) {
   const tip = document.getElementById("nbdTooltip");
+  if (!tip) return;
   if (n && !overPhoto) {
     tip.textContent = "";
     const strong = document.createElement("strong");
@@ -1003,8 +1031,11 @@ function updateTooltipAt(n, tipLeft, tipTop, overPhoto) {
       tip.appendChild(document.createElement("br"));
       tip.appendChild(document.createTextNode(line));
     }
-    tip.style.left = tipLeft + "px";
-    tip.style.top = tipTop + "px";
+    let x = tipLeft;
+    let y = tipTop;
+    tip.style.left = "0";
+    tip.style.top = "0";
+    tip.style.transform = "translate3d(" + x + "px, " + y + "px, 0)";
     tip.classList.add("visible");
     tip.setAttribute("aria-hidden", "false");
     const margin = 8;
@@ -1015,11 +1046,11 @@ function updateTooltipAt(n, tipLeft, tipTop, overPhoto) {
     if (r.right > window.innerWidth - margin) dx = window.innerWidth - margin - r.right;
     if (r.top < margin) dy = margin - r.top;
     if (r.bottom > window.innerHeight - margin) dy = window.innerHeight - margin - r.bottom;
-    tip.style.left = parseFloat(tip.style.left) + dx + "px";
-    tip.style.top = parseFloat(tip.style.top) + dy + "px";
+    x += dx;
+    y += dy;
+    tip.style.transform = "translate3d(" + x + "px, " + y + "px, 0)";
   } else {
-    tip.classList.remove("visible");
-    tip.setAttribute("aria-hidden", "true");
+    hideNbdTooltip(tip);
   }
 }
 
@@ -1046,8 +1077,7 @@ function clearTwoFingerAndHover() {
     scheduleDraw();
   }
   hidePhotoTooltip();
-  document.getElementById("nbdTooltip").classList.remove("visible");
-  document.getElementById("nbdTooltip").setAttribute("aria-hidden", "true");
+  hideNbdTooltip();
 }
 
 const mapWrap = document.getElementById("mapWrap");
@@ -1184,8 +1214,7 @@ function onPointerUp(e) {
       hoverNbd = null;
       scheduleDraw();
     }
-    document.getElementById("nbdTooltip").classList.remove("visible");
-    document.getElementById("nbdTooltip").setAttribute("aria-hidden", "true");
+    hideNbdTooltip();
   }
 }
 
@@ -1202,8 +1231,7 @@ mapWrap.addEventListener("pointerleave", function () {
     }
     hidePhotoTooltip();
     scheduleDraw();
-    document.getElementById("nbdTooltip").classList.remove("visible");
-    document.getElementById("nbdTooltip").setAttribute("aria-hidden", "true");
+    hideNbdTooltip();
   }
 });
 

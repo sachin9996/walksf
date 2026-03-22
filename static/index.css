@@ -426,38 +426,30 @@ body {
   color: #fff;
   pointer-events: none;
   opacity: 0;
-  transform: scale(0.92);
-  transition: opacity 0.15s ease, transform 0.25s ease;
-  z-index: 10;
+  transform-origin: 0 0;
+  transition: opacity 0.15s ease;
+  z-index: 12;
   max-width: 260px;
 }
 
 #nbdTooltip.visible {
   opacity: 1;
-  transform: scale(1);
 }
 
 #photoTooltip {
-  opacity: 1;
-  transform: translateX(-50%) scale(1);
-  z-index: 10;
-  position: absolute;
-  left: 50%;
-  bottom: 100%;
-  margin-bottom: 8px;
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 15;
+  transform-origin: top center;
   width: max-content;
   max-width: min(90vw, 180px);
-  transition: opacity 0.15s ease, transform 0.25s ease;
-}
-
-#photoPinsLayer .photo-pin {
-  overflow: visible;
+  pointer-events: none;
 }
 
 @media (pointer: coarse) {
   #photoTooltip {
     pointer-events: auto;
-    z-index: 50;
   }
 
   #photoTooltip img {
@@ -493,7 +485,7 @@ body {
   pointer-events: none;
 }
 
-.photo-pin #photoTooltip .photo-tooltip-shadow {
+#photoTooltip:not([aria-hidden="true"]) .photo-tooltip-shadow {
   opacity: 1;
 }
 
@@ -504,12 +496,6 @@ body {
   align-items: center;
   padding: 10px;
   background: linear-gradient(165deg, #f8f4eb 0%, #efe8dc 50%, #e8e0d2 100%);
-}
-
-#photoTooltip .photo-tooltip-inner::before {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
 }
 
 #photoTooltip img {

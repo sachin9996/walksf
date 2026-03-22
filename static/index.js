@@ -159,22 +159,46 @@ function isNarrowViewport() {
   return window.innerWidth <= 768;
 }
 
-function resize() {
+// On mobile, layout clientHeight can stay "full window" while visualViewport.height is shorter because of the URL bar.
+// Prefer the visual viewport when it is shorter than the layout box.
+function getCanvasCssSize() {
+  let w = canvas.clientWidth;
+  let h = canvas.clientHeight;
+  const vv = window.visualViewport;
+  if (vv && vv.height > 0 && h > vv.height + 0.5) {
+    h = vv.height;
+  }
+  return { w: Math.max(1, Math.round(w)), h: Math.max(1, Math.round(h)) };
+}
+
+function ensureCanvasBitmapMatchesCSS() {
   const rawDpr = window.devicePixelRatio || 1;
-  dpr = isNarrowViewport() ? Math.min(rawDpr, 2) : rawDpr;
-  const w = canvas.clientWidth,
-    h = canvas.clientHeight;
+  const nextDpr = isNarrowViewport() ? Math.min(rawDpr, 2) : rawDpr;
+  const { w, h } = getCanvasCssSize();
+  if (canvas.width === w * nextDpr && canvas.height === h * nextDpr && dpr === nextDpr) {
+    return false;
+  }
+  dpr = nextDpr;
   canvas.width = w * dpr;
   canvas.height = h * dpr;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.scale(dpr, dpr);
+  return true;
+}
 
+function resize() {
+  const rawDpr = window.devicePixelRatio || 1;
+  dpr = isNarrowViewport() ? Math.min(rawDpr, 2) : rawDpr;
+  const { w, h } = getCanvasCssSize();
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.scale(dpr, dpr);
   scheduleDraw();
 }
 
 function minScaleForZoomOut() {
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
+  const { w, h } = getCanvasCssSize();
   const viewW = VIEW_BOUNDS[2] - VIEW_BOUNDS[0];
   const viewH = VIEW_BOUNDS[3] - VIEW_BOUNDS[1];
   const viewSpan = Math.max(viewW, viewH);
@@ -190,26 +214,10 @@ function scaleFloor() {
 }
 
 function clampView() {
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
+  const { w, h } = getCanvasCssSize();
   const floor = scaleFloor();
-  const prevScale = scale;
   scale = Math.max(floor, Math.min(maxScale, scale));
-  if (window.__zoomDebug && prevScale !== scale) {
-    console.log(
-      "[clampView]",
-      "scale",
-      prevScale.toFixed(0),
-      "->",
-      scale.toFixed(0),
-      "floor",
-      floor.toFixed(0),
-      "w",
-      w,
-      "h",
-      h,
-    );
-  }
+
   const contentCenter = canvasToContent(w / 2, h / 2, w, h);
   let centerLon = (contentCenter.x - tx) / scale;
   let centerLat = (ty - contentCenter.y) / scale;
@@ -223,8 +231,9 @@ function fit() {
   angle = 0;
   const b = bounds || defaultBounds;
   const pad = 40;
-  const w = canvas.clientWidth - pad * 2,
-    h = canvas.clientHeight - pad * 2;
+  const css = getCanvasCssSize();
+  const w = css.w - pad * 2,
+    h = css.h - pad * 2;
   if (w <= 0 || h <= 0) {
     return;
   }
@@ -237,8 +246,8 @@ function fit() {
   let s = Math.min(w / rw, h / rh);
   const floor = scaleFloor();
   scale = Math.min(maxScale, Math.max(floor, s));
-  const cx = canvas.clientWidth / 2,
-    cy = canvas.clientHeight / 2;
+  const cx = css.w / 2,
+    cy = css.h / 2;
   const midLon = (minLon + maxLon) / 2,
     midLat = (minLat + maxLat) / 2;
   tx = cx - midLon * scale;
@@ -420,8 +429,11 @@ function draw() {
     }
   }
   clampView();
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
+  if (ensureCanvasBitmapMatchesCSS()) {
+    scheduleDraw();
+    return;
+  }
+  const { w, h } = getCanvasCssSize();
   const dimStreet = 0.06;
   const dimPath = 0.1;
 
@@ -855,8 +867,7 @@ function drawNbdHoverOutline(feat) {
 function updatePhotoPins() {
   const layer = document.getElementById("photoPinsLayer");
   if (!layer) return;
-  const w = canvas.clientWidth,
-    h = canvas.clientHeight;
+  const { w, h } = getCanvasCssSize();
   layer.setAttribute("aria-hidden", photoList.length ? "false" : "true");
   while (layer.children.length > photoList.length) {
     layer.lastChild.remove();
@@ -865,6 +876,8 @@ function updatePhotoPins() {
   for (let i = 0; i < photoList.length; i++) {
     const p = photoList[i];
     const { x, y } = projectCSS(p.lon, p.lat, w, h);
+    const px = x - 13;
+    const py = y - 26;
     let pin = layer.children[i];
     if (!pin) {
       pin = document.createElement("button");
@@ -902,8 +915,7 @@ function updatePhotoPins() {
     } else {
       pin.dataset.index = String(i);
     }
-    pin.style.left = Math.round(x) + "px";
-    pin.style.top = Math.round(y) + "px";
+    pin.style.transform = "translate3d(" + px + "px, " + py + "px, 0)";
   }
 }
 
@@ -911,8 +923,7 @@ function pointerAt(clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
   const x = clientX - rect.left,
     y = clientY - rect.top;
-  const w = canvas.clientWidth,
-    h = canvas.clientHeight;
+  const { w, h } = getCanvasCssSize();
   const { lon, lat } = unproject(x, y, w, h);
   const n = nbdAt(lon, lat);
   const tipLeft = clientX + 14;
@@ -1061,8 +1072,7 @@ function onMapPointerDown(e) {
       const rect = canvas.getBoundingClientRect();
       const x = e.clientX - rect.left,
         y = e.clientY - rect.top;
-      const w = canvas.clientWidth,
-        h = canvas.clientHeight;
+      const { w, h } = getCanvasCssSize();
       const { lon, lat } = unproject(x, y, w, h);
       drag = { lon0: lon, lat0: lat };
       canvas.style.cursor = "move";
@@ -1084,8 +1094,7 @@ function onMapPointerMove(e) {
   if (!mapWrap.contains(e.target)) return;
   activePointers.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
   const rect = canvas.getBoundingClientRect();
-  const w = canvas.clientWidth,
-    h = canvas.clientHeight;
+  const { w, h } = getCanvasCssSize();
   if (activePointers.size === 2) {
     if (twoFingerState) {
       e.preventDefault();
@@ -1156,8 +1165,7 @@ function onPointerUp(e) {
       const rect = canvas.getBoundingClientRect();
       const x = pos.clientX - rect.left,
         y = pos.clientY - rect.top;
-      const w = canvas.clientWidth,
-        h = canvas.clientHeight;
+      const { w, h } = getCanvasCssSize();
       const { lon, lat } = unproject(x, y, w, h);
       drag = { lon0: lon, lat0: lat };
     }
@@ -1194,8 +1202,7 @@ mapWrap.addEventListener("pointerleave", function () {
 
 function zoomAt(canvasCx, canvasCy, k) {
   markViewChanged();
-  const w = canvas.clientWidth,
-    h = canvas.clientHeight;
+  const { w, h } = getCanvasCssSize();
   const { x: contentCx, y: contentCy } = canvasToContent(canvasCx, canvasCy, w, h);
   const oldScale = scale;
   const floor = scaleFloor();
@@ -1203,26 +1210,12 @@ function zoomAt(canvasCx, canvasCy, k) {
   const newTx = contentCx - ((contentCx - tx) * newScale) / oldScale;
   const newTy = contentCy + ((ty - contentCy) * newScale) / oldScale;
   zoomTarget = { scale: newScale, tx: newTx, ty: newTy };
-  if (window.__zoomDebug) {
-    console.log(
-      "[zoom]",
-      "scale",
-      scale.toFixed(0),
-      "->",
-      newScale.toFixed(0),
-      "floor",
-      floor.toFixed(0),
-      "minScaleOut",
-      minScaleForZoomOut().toFixed(0),
-    );
-  }
   scheduleDraw();
 }
 
 function applyZoomAt(canvasCx, canvasCy, k) {
   markViewChanged();
-  const w = canvas.clientWidth,
-    h = canvas.clientHeight;
+  const { w, h } = getCanvasCssSize();
   const { x: contentCx, y: contentCy } = canvasToContent(canvasCx, canvasCy, w, h);
   const oldScale = scale;
   const floor = scaleFloor();
@@ -1231,9 +1224,6 @@ function applyZoomAt(canvasCx, canvasCy, k) {
   tx = contentCx - ((contentCx - tx) * newScale) / oldScale;
   ty = contentCy + ((ty - contentCy) * newScale) / oldScale;
   zoomTarget = null;
-  if (window.__zoomDebug) {
-    console.log("[zoom pinch]", "scale", scale.toFixed(0), "floor", floor.toFixed(0));
-  }
   scheduleDraw();
 }
 
@@ -1278,27 +1268,23 @@ canvas.addEventListener("keydown", function (e) {
     scheduleDraw();
     e.preventDefault();
   } else if (e.key === "+" || e.key === "=") {
-    const cx = canvas.clientWidth / 2,
-      cy = canvas.clientHeight / 2;
-    zoomAt(cx, cy, 1.25);
+    const { w, h } = getCanvasCssSize();
+    zoomAt(w / 2, h / 2, 1.25);
     e.preventDefault();
   } else if (e.key === "-") {
-    const cx = canvas.clientWidth / 2,
-      cy = canvas.clientHeight / 2;
-    zoomAt(cx, cy, 1 / 1.25);
+    const { w, h } = getCanvasCssSize();
+    zoomAt(w / 2, h / 2, 1 / 1.25);
     e.preventDefault();
   }
 });
 
 document.getElementById("zoomIn").addEventListener("click", () => {
-  const cx = canvas.clientWidth / 2,
-    cy = canvas.clientHeight / 2;
-  zoomAt(cx, cy, 1.3);
+  const { w, h } = getCanvasCssSize();
+  zoomAt(w / 2, h / 2, 1.3);
 });
 document.getElementById("zoomOut").addEventListener("click", () => {
-  const cx = canvas.clientWidth / 2,
-    cy = canvas.clientHeight / 2;
-  zoomAt(cx, cy, 1 / 1.3);
+  const { w, h } = getCanvasCssSize();
+  zoomAt(w / 2, h / 2, 1 / 1.3);
 });
 document.getElementById("zoomReset").addEventListener("click", () => {
   fit();
@@ -1440,6 +1426,8 @@ async function init() {
 init();
 
 window.addEventListener("resize", resize);
+window.visualViewport?.addEventListener("resize", resize);
+
 requestAnimationFrame(() => {
   resize();
 });

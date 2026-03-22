@@ -44,10 +44,10 @@ body {
 
 #photoPinsLayer .photo-pin {
   position: absolute;
+  left: 0;
+  top: 0;
   width: 26px;
   height: 26px;
-  margin-left: -13px;
-  margin-top: -26px;
   padding: 0;
   border: none;
   background: none;

@@ -290,29 +290,39 @@ func zipExportTime(z *zip.Reader) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("open xml file: %w", err)
 	}
 	defer rc.Close()
-	var doc struct {
-		XMLName       xml.Name `xml:"urn:hl7-org:v3 ClinicalDocument"`
-		EffectiveTime struct {
-			Value string `xml:"value,attr"`
-		} `xml:"urn:hl7-org:v3 effectiveTime"`
+	dec := xml.NewDecoder(rc)
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			return time.Time{}, fmt.Errorf("export_cda.xml: no effectiveTime timestamp found")
+		}
+		if err != nil {
+			return time.Time{}, fmt.Errorf("xml: %w", err)
+		}
+		se, ok := tok.(xml.StartElement)
+		if !ok || se.Name.Local != "effectiveTime" {
+			continue
+		}
+		for _, a := range se.Attr {
+			if a.Name.Local != "value" || a.Value == "" {
+				continue
+			}
+			v := strings.TrimSpace(a.Value)
+			if v == "" || len(v) < 14 {
+				return time.Time{}, fmt.Errorf("invalid time format: %q", v)
+			}
+			var t time.Time
+			if len(v) >= 19 && (v[14] == '+' || v[14] == '-') {
+				t, err = time.Parse("20060102150405-0700", v)
+			} else {
+				t, err = time.Parse("20060102150405", v[:14])
+			}
+			if err != nil {
+				return time.Time{}, fmt.Errorf("parse time %q: %w", v, err)
+			}
+			return t, nil
+		}
 	}
-	if err := xml.NewDecoder(rc).Decode(&doc); err != nil {
-		return time.Time{}, fmt.Errorf("decode xml file: %w", err)
-	}
-	v := strings.TrimSpace(doc.EffectiveTime.Value)
-	if v == "" || len(v) < 14 {
-		return time.Time{}, fmt.Errorf("invalid time format: %q", v)
-	}
-	var t time.Time
-	if len(v) >= 19 && (v[14] == '+' || v[14] == '-') {
-		t, err = time.Parse("20060102150405-0700", v)
-	} else {
-		t, err = time.Parse("20060102150405", v[:14])
-	}
-	if err != nil {
-		return time.Time{}, fmt.Errorf("parse time %q: %w", v, err)
-	}
-	return t, nil
 }
 
 func (s *Server) tick() {

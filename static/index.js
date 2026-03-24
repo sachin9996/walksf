@@ -104,6 +104,8 @@ const LABEL_MIN_LENGTH_DEG = 0.008;
 const LABEL_CLASH_PAD = 4;
 const LABEL_PUSH_STEP_PX = 24;
 const LABEL_PUSH_ATTEMPTS = 5;
+/** Cleared when `scale` changes so label clash offsets are recomputed. */
+let roadLabelClashScale = null;
 let scale = 0.5,
   tx = 0,
   ty = 0,
@@ -668,6 +670,12 @@ function updateRuler(w, h) {
 
 function drawRoadLabels(w, h, hoverFeat) {
   if (scale < LABEL_MIN_SCALE || roadLabels.length === 0) return;
+  if (roadLabelClashScale !== scale) {
+    roadLabelClashScale = scale;
+    for (let i = 0; i < roadLabels.length; i++) {
+      roadLabels[i]._clashD = undefined;
+    }
+  }
   const p00 = canvasToContent(0, 0, w, h);
   const p0h = canvasToContent(0, h, w, h);
   const pw0 = canvasToContent(w, 0, w, h);
@@ -685,8 +693,6 @@ function drawRoadLabels(w, h, hoverFeat) {
   const labelMaxLon = maxLon + padding;
   const labelMinLat = minLat - padding;
   const labelMaxLat = maxLat + padding;
-  const cx = (minLon + maxLon) / 2;
-  const cy = (minLat + maxLat) / 2;
 
   const showAllLabels = scale >= LABEL_LOD_HIGH_ZOOM;
   const inView = [];
@@ -709,17 +715,19 @@ function drawRoadLabels(w, h, hoverFeat) {
     else list.push(v);
   }
   const toDraw = [];
-  const centerContentX = (minContentX + maxContentX) / 2;
-  const centerContentY = (minContentY + maxContentY) / 2;
-  const centerCanvas = contentToCanvas(centerContentX, centerContentY, w, h);
-  const cxScreen = centerCanvas.x;
-  const cyScreen = centerCanvas.y;
+  const geoCenter = unproject(w / 2, h / 2, w, h);
+  function distSqToViewCenter(v) {
+    const dl = v.lab.midLon - geoCenter.lon;
+    const da = v.lab.midLat - geoCenter.lat;
+    return dl * dl + da * da;
+  }
+  function cmpViewStable(a, b) {
+    const d = distSqToViewCenter(a) - distSqToViewCenter(b);
+    if (d !== 0) return d;
+    return a.lab.midLon - b.lab.midLon || a.lab.midLat - b.lab.midLat;
+  }
   byName.forEach(function (list) {
-    list.sort(function (a, b) {
-      const da = (a.sx - cxScreen) * (a.sx - cxScreen) + (a.sy - cyScreen) * (a.sy - cyScreen);
-      const db = (b.sx - cxScreen) * (b.sx - cxScreen) + (b.sy - cyScreen) * (b.sy - cyScreen);
-      return da - db;
-    });
+    list.sort(cmpViewStable);
     toDraw.push(list[0]);
   });
 
@@ -739,23 +747,24 @@ function drawRoadLabels(w, h, hoverFeat) {
   ctx.lineWidth = 2 * lineScale;
   ctx.lineJoin = "round";
 
-  // Clash avoidance: push labels along road if bboxes overlap (cheap pass)
+  // Clash avoidance: offset along road in *content* space (not screen), then project to screen.
+  // Cached on lab._clashD so positions stay fixed to the map; cleared when scale changes.
   const placed = [];
   const approxH = 14;
-  toDraw.sort(function (a, b) {
-    const da = (a.sx - cxScreen) * (a.sx - cxScreen) + (a.sy - cyScreen) * (a.sy - cyScreen);
-    const db = (b.sx - cxScreen) * (b.sx - cxScreen) + (b.sy - cyScreen) * (b.sy - cyScreen);
-    return da - db;
-  });
+  const stepC = LABEL_PUSH_STEP_PX;
+  toDraw.sort(cmpViewStable);
   for (let i = 0; i < toDraw.length; i++) {
     const v = toDraw[i];
     const lab = v.lab;
     const tw = ctx.measureText(lab.name).width;
     const halfW = tw / 2 + LABEL_CLASH_PAD;
     const halfH = approxH / 2 + LABEL_CLASH_PAD;
-    const angle = lab.angle != null ? lab.angle : 0;
-    const cosA = Math.cos(angle);
-    const sinA = Math.sin(angle);
+    const roadBearing = lab.angle != null ? lab.angle : 0;
+    const cosB = Math.cos(roadBearing);
+    const sinB = Math.sin(roadBearing);
+    const baseCx = lab.midLon * scale + tx;
+    const baseCy = ty - lab.midLat * scale;
+
     function bboxAt(sx, sy) {
       return {
         left: sx - halfW,
@@ -767,44 +776,58 @@ function drawRoadLabels(w, h, hoverFeat) {
     function overlaps(a, b) {
       return !(a.right < b.left || a.left > b.right || a.bottom < b.top || a.top > b.bottom);
     }
-    let sx = v.sx,
-      sy = v.sy;
-    let box = bboxAt(sx, sy);
-    let found = false;
-    for (let k = 0; k < placed.length && !found; k++) {
-      if (overlaps(box, placed[k])) {
-        found = true;
-        break;
-      }
+    function screenAtD(d) {
+      const cx = baseCx + cosB * d;
+      const cy = baseCy + sinB * d;
+      const p = contentToCanvas(cx, cy, w, h);
+      return { sx: p.x, sy: p.y, box: bboxAt(p.x, p.y) };
     }
-    if (found) {
+
+    let d = lab._clashD;
+    if (d !== undefined) {
+      const p = screenAtD(d);
+      v.sx = p.sx;
+      v.sy = p.sy;
+      placed.push(p.box);
+      continue;
+    }
+
+    let chosen = screenAtD(0);
+    let overlapsPlaced = false;
+    for (let k = 0; k < placed.length && !overlapsPlaced; k++) {
+      if (overlaps(chosen.box, placed[k])) overlapsPlaced = true;
+    }
+    if (!overlapsPlaced) {
+      lab._clashD = 0;
+    } else {
       let pushed = false;
       for (let n = 1; n <= LABEL_PUSH_ATTEMPTS && !pushed; n++) {
         for (const sign of [1, -1]) {
-          const step = sign * n * LABEL_PUSH_STEP_PX;
-          const nsx = v.sx + step * cosA;
-          const nsy = v.sy + step * sinA;
-          const nbox = bboxAt(nsx, nsy);
+          const tryD = sign * n * stepC;
+          const cand = screenAtD(tryD);
           let ok = true;
           for (let k = 0; k < placed.length; k++) {
-            if (overlaps(nbox, placed[k])) {
+            if (overlaps(cand.box, placed[k])) {
               ok = false;
               break;
             }
           }
           if (ok) {
-            sx = nsx;
-            sy = nsy;
-            box = nbox;
+            chosen = cand;
+            lab._clashD = tryD;
             pushed = true;
             break;
           }
         }
       }
+      if (!pushed) {
+        lab._clashD = 0;
+        chosen = screenAtD(0);
+      }
     }
-    v.sx = sx;
-    v.sy = sy;
-    placed.push(box);
+    v.sx = chosen.sx;
+    v.sy = chosen.sy;
+    placed.push(chosen.box);
   }
 
   for (let i = 0; i < toDraw.length; i++) {
@@ -813,12 +836,14 @@ function drawRoadLabels(w, h, hoverFeat) {
     const bright = !dim || v.inside;
     ctx.fillStyle = bright ? "rgba(160,170,185,0.72)" : "rgba(100,110,125,0.38)";
     ctx.strokeStyle = bright ? "rgba(8,14,22,0.88)" : "rgba(8,14,22,0.45)";
-    let drawAngle = lab.angle != null ? lab.angle : 0;
-    if (drawAngle > Math.PI / 2 || drawAngle < -Math.PI / 2) drawAngle += Math.PI;
+    const roadAngle = lab.angle != null ? lab.angle : 0;
+    const mapAngle = angle;
+    let labelAngle = mapAngle + roadAngle;
+    while (labelAngle > Math.PI / 2) labelAngle -= Math.PI;
+    while (labelAngle < -Math.PI / 2) labelAngle += Math.PI;
     ctx.save();
     ctx.translate(v.sx, v.sy);
-    ctx.rotate(angle);
-    ctx.rotate(drawAngle);
+    ctx.rotate(labelAngle);
     ctx.strokeText(lab.name, 0, 0);
     ctx.fillText(lab.name, 0, 0);
     ctx.restore();

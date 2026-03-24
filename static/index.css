@@ -94,6 +94,7 @@ body {
   top: 0;
   width: 30px;
   bottom: 25px;
+  overflow: hidden;
 }
 
 #ruler .ruler-lon {
@@ -101,6 +102,7 @@ body {
   right: 0;
   bottom: 0;
   height: 25px;
+  overflow: hidden;
 }
 
 #ruler .ruler-line {

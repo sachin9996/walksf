@@ -85,6 +85,12 @@ function hidePhotoTooltip() {
   hoverPhotoPinEl = null;
   const tip = getPhotoTooltipEl();
   if (tip) {
+    const img = tip.querySelector("img");
+    if (img) {
+      img.onload = null;
+      img.onerror = null;
+      img.removeAttribute("src");
+    }
     tip.setAttribute("aria-hidden", "true");
     tip.style.left = "";
     tip.style.top = "";

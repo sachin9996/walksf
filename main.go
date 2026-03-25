@@ -998,19 +998,19 @@ func processImagesDir(dirPath string) *photoData {
 		slog.Warn("images dir not found, skipping photos", "path", dirPath, "err", err)
 		return nil
 	}
-	var jpgNames []string
+	var webpNames []string
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
 		name := e.Name()
 		lower := strings.ToLower(name)
-		if !strings.HasSuffix(lower, ".jpg") {
+		if !strings.HasSuffix(lower, ".webp") {
 			continue
 		}
-		jpgNames = append(jpgNames, name)
+		webpNames = append(webpNames, name)
 	}
-	slog.Debug("processing images dir", "jpg_files", len(jpgNames))
+	slog.Debug("processing images dir", "webp_files", len(webpNames))
 
 	im, err := exifcommon.NewIfdMappingWithStandard()
 	if err != nil {
@@ -1034,7 +1034,7 @@ func processImagesDir(dirPath string) *photoData {
 	var photos []photoRecord
 	var processed int
 	var firstSkipReason string
-	for _, name := range jpgNames {
+	for _, name := range webpNames {
 		filePath := filepath.Join(dirPath, name)
 		raw, err := os.ReadFile(filePath)
 		if err != nil {
@@ -1100,8 +1100,8 @@ func processImagesDir(dirPath string) *photoData {
 		photos = append(photos, rec)
 	}
 	slog.Debug("photos from images dir", "processed", processed, "included", len(photos))
-	if len(jpgNames) > 0 && processed == 0 && firstSkipReason != "" {
-		slog.Info("all JPG files skipped", "example_reason", firstSkipReason, "hint", "photos need GPS in EXIF")
+	if len(webpNames) > 0 && processed == 0 && firstSkipReason != "" {
+		slog.Info("all WebP files skipped", "example_reason", firstSkipReason, "hint", "photos need GPS in EXIF")
 	}
 	return &photoData{Photos: photos}
 }

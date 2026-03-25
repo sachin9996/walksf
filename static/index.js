@@ -20,6 +20,18 @@ function isCoarsePointer() {
   return typeof window !== "undefined" && window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
 }
 
+function prefersReducedMotion() {
+  try {
+    return (
+      typeof window !== "undefined" &&
+      window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    );
+  } catch (e) {
+    return false;
+  }
+}
+
 let photoTooltipEl = null;
 let hoverPhotoPinEl = null;
 
@@ -1275,7 +1287,14 @@ function zoomAt(canvasCx, canvasCy, k) {
   const newScale = Math.max(floor, Math.min(maxScale, scale * k));
   const newTx = contentCx - ((contentCx - tx) * newScale) / oldScale;
   const newTy = contentCy + ((ty - contentCy) * newScale) / oldScale;
-  zoomTarget = { scale: newScale, tx: newTx, ty: newTy };
+  if (prefersReducedMotion()) {
+    scale = newScale;
+    tx = newTx;
+    ty = newTy;
+    zoomTarget = null;
+  } else {
+    zoomTarget = { scale: newScale, tx: newTx, ty: newTy };
+  }
   scheduleDraw();
 }
 
@@ -1302,7 +1321,7 @@ if (mapWrap) {
       const rect = canvas.getBoundingClientRect();
       const cx = e.clientX - rect.left;
       const cy = e.clientY - rect.top;
-      const step = e.deltaY > 0 ? 0.85 : 1.18;
+      const step = e.deltaY > 0 ? 1 / 1.5 : 1.5;
       zoomAt(cx, cy, step);
     },
     { passive: false },
@@ -1335,22 +1354,22 @@ canvas.addEventListener("keydown", function (e) {
     e.preventDefault();
   } else if (e.key === "+" || e.key === "=") {
     const { w, h } = getCanvasCssSize();
-    zoomAt(w / 2, h / 2, 1.25);
+    zoomAt(w / 2, h / 2, 1.5);
     e.preventDefault();
   } else if (e.key === "-") {
     const { w, h } = getCanvasCssSize();
-    zoomAt(w / 2, h / 2, 1 / 1.25);
+    zoomAt(w / 2, h / 2, 1 / 1.5);
     e.preventDefault();
   }
 });
 
 document.getElementById("zoomIn").addEventListener("click", () => {
   const { w, h } = getCanvasCssSize();
-  zoomAt(w / 2, h / 2, 1.3);
+  zoomAt(w / 2, h / 2, 1.5);
 });
 document.getElementById("zoomOut").addEventListener("click", () => {
   const { w, h } = getCanvasCssSize();
-  zoomAt(w / 2, h / 2, 1 / 1.3);
+  zoomAt(w / 2, h / 2, 1 / 1.5);
 });
 document.getElementById("zoomReset").addEventListener("click", () => {
   fit();

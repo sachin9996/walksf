@@ -1,4 +1,4 @@
-module sfwalkpercent
+module walksf
 
 go 1.26
 

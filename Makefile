@@ -1,7 +1,7 @@
 .PHONY: build install
 
 build:
-	GOEXPERIMENT=jsonv2 go build -o sfwalkpercent .
+	GOEXPERIMENT=jsonv2 go build -o walksf .
 
 install: static/neighborhoods.geojson
 

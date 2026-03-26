@@ -1,8 +1,8 @@
-# SF Walk%
+# Walk SF
 
-https://sfwalkpercent.com
+https://walksf.quest
 
-Visualize San Francisco streets I've walked.
+Walking all the streets of San Francisco!
 
 ## Data
 
@@ -12,7 +12,7 @@ Neighborhood GeoJSON comes from [SF Open Data](https://data.sfgov.org/resource/g
 
 ```bash
 make
-./sfwalkpercent -addr=127.0.0.1:8080
+./walksf -addr=127.0.0.1:8080
 ```
 
 ## Flags
@@ -22,7 +22,7 @@ make
 
 ## Notes for me because I'm forgetful
 
-Google Photos gives me HEIC files with location information. Transform them into jpg files that preserve this data using:
+Google Photos gives me HEIC files with location information. Transform them into webp files that preserve this data using:
 
 ```
 for f in *.HEIC; do

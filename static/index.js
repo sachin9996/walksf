@@ -1,6 +1,6 @@
 const minScale = 700;
 const maxScale = 100000;
-const defaultBounds = [-122.52, 37.68, -122.35, 37.82];
+const defaultBounds = [-122.5136606, 37.670159, -122.357791, 37.8278432];
 const VIEW_BOUNDS = defaultBounds.slice();
 
 const canvas = document.getElementById("map");

@@ -175,8 +175,8 @@ type Server struct {
 	cache *cache
 }
 
-func (s *Server) storeDrawPayload(pathFeats []streetFeat, st *nbdStats) {
-	core := buildDrawCore(pathFeats, st)
+func (s *Server) storeDrawPayload(pathFeats []streetFeat, visitedSegs map[segmentKey]struct{}, st *nbdStats) {
+	core := buildDrawCore(pathFeats, visitedSegs, st)
 	coreBody, err := json.Marshal(core)
 	if err == nil {
 		s.drawCoreBody.Store(&coreBody)
@@ -229,7 +229,7 @@ func newServer() (*Server, error) {
 	if err == nil {
 		s.streetsBody = body
 	}
-	s.storeDrawPayload(nil, nil)
+	s.storeDrawPayload(nil, nil, nil)
 	s.photos.Store(&photoData{Photos: nil})
 	slog.Debug("startup", "step", "marshal_streets_and_draw_payload", "duration_ms", time.Since(t0).Milliseconds())
 
@@ -243,14 +243,14 @@ func newServer() (*Server, error) {
 			slog.Debug("startup", "step", "load_neighborhoods", "duration_ms", time.Since(t0).Milliseconds(), "count", len(nbds))
 			if st := computeNbdStats(nil); st != nil {
 				s.nbdStats.Store(st)
-				s.storeDrawPayload(nil, st)
+				s.storeDrawPayload(nil, nil, st)
 			}
 		}
 	} else {
 		slog.Debug("startup", "step", "load_neighborhoods", "duration_ms", time.Since(t0).Milliseconds(), "skipped", true)
 	}
 	if s.drawCoreBody.Load() == nil {
-		s.storeDrawPayload(nil, nil)
+		s.storeDrawPayload(nil, nil, nil)
 	}
 
 	t0 = time.Now()
@@ -465,7 +465,7 @@ func (s *Server) tick() {
 		}
 	}
 
-	s.storeDrawPayload(visitedList, st)
+	s.storeDrawPayload(visitedList, visitedSegs, st)
 	slog.Debug("tick", "step", "nbd_and_draw", "duration_ms", time.Since(t0).Milliseconds())
 
 	t0 = time.Now()
@@ -1356,13 +1356,30 @@ func ringsToPathString(rings [][][]float64) string {
 	return b.String()
 }
 
-func buildDrawCore(pathFeats []streetFeat, st *nbdStats) *drawCorePayload {
+func buildDrawCore(pathFeats []streetFeat, visitedSegs map[segmentKey]struct{}, st *nbdStats) *drawCorePayload {
 	out := &drawCorePayload{}
 	var streetPolys [][][]float64
-	for _, f := range streets {
+	for si, f := range streets {
 		coords := f.Geometry.Coordinates
-		if len(coords) >= 2 {
-			streetPolys = append(streetPolys, coords)
+		if len(coords) < 2 {
+			continue
+		}
+		var run [][]float64
+		for j := 0; j < len(coords)-1; j++ {
+			if _, vis := visitedSegs[segmentKey{si, j}]; vis {
+				if len(run) >= 2 {
+					streetPolys = append(streetPolys, run)
+				}
+				run = nil
+				continue
+			}
+			if len(run) == 0 {
+				run = [][]float64{{coords[j][0], coords[j][1]}}
+			}
+			run = append(run, []float64{coords[j+1][0], coords[j+1][1]})
+		}
+		if len(run) >= 2 {
+			streetPolys = append(streetPolys, run)
 		}
 	}
 	var pathPolys [][][]float64
@@ -1374,47 +1391,7 @@ func buildDrawCore(pathFeats []streetFeat, st *nbdStats) *drawCorePayload {
 	}
 	out.Streets = polylinesToPathString(streetPolys)
 	out.Paths = polylinesToPathString(pathPolys)
-	minLon, minLat := math.Inf(1), math.Inf(1)
-	maxLon, maxLat := math.Inf(-1), math.Inf(-1)
-	for _, poly := range streetPolys {
-		for _, c := range poly {
-			if len(c) >= 2 {
-				if c[0] < minLon {
-					minLon = c[0]
-				}
-				if c[0] > maxLon {
-					maxLon = c[0]
-				}
-				if c[1] < minLat {
-					minLat = c[1]
-				}
-				if c[1] > maxLat {
-					maxLat = c[1]
-				}
-			}
-		}
-	}
-	for _, poly := range pathPolys {
-		for _, c := range poly {
-			if len(c) >= 2 {
-				if c[0] < minLon {
-					minLon = c[0]
-				}
-				if c[0] > maxLon {
-					maxLon = c[0]
-				}
-				if c[1] < minLat {
-					minLat = c[1]
-				}
-				if c[1] > maxLat {
-					maxLat = c[1]
-				}
-			}
-		}
-	}
-	if minLon != math.Inf(1) {
-		out.Bounds = [4]float64{minLon, minLat, maxLon, maxLat}
-	}
+	out.Bounds = [4]float64{-122.5136606, 37.670159, -122.357791, 37.8278432}
 	if len(nbds) > 0 {
 		var allRings [][][]float64
 		for i := range nbds {

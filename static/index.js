@@ -1376,12 +1376,23 @@ document.getElementById("zoomReset").addEventListener("click", () => {
   scheduleDraw();
 });
 
+function scheduleHideLoading() {
+  requestAnimationFrame(() => {
+    const el = document.getElementById("loading");
+    if (!el || el.classList.contains("loading--hidden")) return;
+    el.classList.add("loading--hidden");
+    el.setAttribute("aria-busy", "false");
+    el.setAttribute("aria-hidden", "true");
+  });
+}
+
 async function init() {
   try {
     const coreRes = await fetch("/api/draw");
     if (!coreRes.ok) {
-      console.log("[load] core fetch failed", coreRes.status, coreRes.statusText);
+      console.log("/api/draw failed", coreRes.status, coreRes.statusText);
       bounds = defaultBounds.slice();
+      scheduleHideLoading();
       fit();
       scheduleDraw();
       return;
@@ -1412,6 +1423,7 @@ async function init() {
       nbdFeats = [];
       nbdOutlinesPath2D = null;
     }
+    scheduleHideLoading();
     fit();
     scheduleDraw();
 
@@ -1441,7 +1453,7 @@ async function init() {
       })
       .catch(() => {});
   } catch (e) {
-    console.error("[init] failed", e);
+    console.error("/api/photos failed", e);
   }
 
   const modal = document.getElementById("photoModal");

@@ -69,6 +69,53 @@ body {
   outline: none;
 }
 
+.loading {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0a1628;
+  transition: opacity 0.4s ease, visibility 0.4s ease;
+}
+
+.loading.loading--hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.loading-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 24px;
+}
+
+.loading-spinner {
+  width: 42px;
+  height: 42px;
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  border-top-color: rgba(255, 200, 100, 0.9);
+  border-radius: 50%;
+  animation: loading-spin 0.75s linear infinite;
+}
+
+.loading-text {
+  margin-top: 18px;
+  font: 14px/1.4 sans-serif;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.2);
+}
+
+@keyframes loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 #ruler {
   position: fixed;
   left: 0;
@@ -223,11 +270,6 @@ body {
 
 #help:hover #helpTooltip,
 #help:focus-within #helpTooltip {
-  opacity: 1;
-  visibility: visible;
-}
-
-#helpTooltip[aria-hidden="false"] {
   opacity: 1;
   visibility: visible;
 }
@@ -560,13 +602,6 @@ body {
   align-items: center;
 }
 
-.photo-modal-card::before {
-  position: absolute;
-  inset: 0;
-  border-radius: 2px;
-  pointer-events: none;
-}
-
 .photo-modal-image-wrap {
   position: relative;
   width: 100%;
@@ -673,5 +708,11 @@ body {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     transition-delay: 0ms !important;
+  }
+
+  .loading-spinner {
+    animation: none !important;
+    border-color: rgba(255, 200, 100, 0.35);
+    border-top-color: rgba(255, 200, 100, 0.95);
   }
 }

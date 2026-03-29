@@ -1315,16 +1315,22 @@ func roundNbdCoords(raw jsontext.Value) any {
 const pathCoordPrec = 6
 
 func appendPathPolyline(s *strings.Builder, coords [][]float64) {
-	for i, c := range coords {
+	var prevX, prevY float64
+	started := false
+	for _, c := range coords {
 		if len(c) < 2 {
 			continue
 		}
 		x, y := c[0], c[1]
-		if i == 0 {
+		if !started {
 			fmt.Fprintf(s, "M%.*f %.*f", pathCoordPrec, x, pathCoordPrec, y)
-		} else {
-			fmt.Fprintf(s, "L%.*f %.*f", pathCoordPrec, x, pathCoordPrec, y)
+			prevX, prevY = x, y
+			started = true
+			continue
 		}
+		dx, dy := x-prevX, y-prevY
+		fmt.Fprintf(s, "l%.*f %.*f", pathCoordPrec, dx, pathCoordPrec, dy)
+		prevX, prevY = x, y
 	}
 }
 

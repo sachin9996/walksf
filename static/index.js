@@ -1386,7 +1386,50 @@ function scheduleHideLoading() {
   });
 }
 
+async function logError(payload) {
+  try {
+    const resp = await fetch("/api/error", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      keepalive: true,
+    });
+    if (!resp.ok) {
+      console.error(payload);
+      console.warn(`Could not report client error`);
+    }
+  } catch (error) {
+    console.error(payload);
+    console.warn(`Could not report client error: ${error?.message}`);
+  }
+}
+
 async function init() {
+  window.addEventListener("error", function (ev) {
+    logError({
+      kind: "error",
+      message: String(ev.message || (ev.error && ev.error.message) || ""),
+      source: ev.filename || "",
+      lineno: ev.lineno || 0,
+      colno: ev.colno || 0,
+      stack: ev.error && ev.error.stack ? String(ev.error.stack) : "",
+    });
+  });
+
+  window.addEventListener("unhandledrejection", function (ev) {
+    const r = ev.reason;
+    const msg = r instanceof Error ? r.message : String(r);
+    const stack = r instanceof Error && r.stack ? String(r.stack) : "";
+    logError({
+      kind: "unhandledrejection",
+      message: msg,
+      stack,
+    });
+  });
+
+  window.addEventListener("resize", resize);
+  window.visualViewport?.addEventListener("resize", resize);
+
   try {
     const coreRes = await fetch("/api/draw");
     if (!coreRes.ok) {
@@ -1521,9 +1564,6 @@ async function init() {
 }
 
 init();
-
-window.addEventListener("resize", resize);
-window.visualViewport?.addEventListener("resize", resize);
 
 requestAnimationFrame(() => {
   resize();

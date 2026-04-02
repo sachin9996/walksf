@@ -478,7 +478,7 @@ func (s *Server) tick() {
 }
 
 func (s *Server) registerStaticRoutes(staticDir string) {
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	handle(http.MethodGet, "/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
@@ -501,7 +501,7 @@ func (s *Server) registerStaticRoutes(staticDir string) {
 		w.Write(html)
 	})
 
-	http.HandleFunc("/static/index.css", func(w http.ResponseWriter, r *http.Request) {
+	handle(http.MethodGet, "/static/index.css", func(w http.ResponseWriter, r *http.Request) {
 		b, err := os.ReadFile(filepath.Join(staticDir, "index.css"))
 		if err != nil {
 			http.NotFound(w, r)
@@ -525,7 +525,7 @@ func (s *Server) registerStaticRoutes(staticDir string) {
 }
 
 func serveStaticFile(route, filePath, contentType string, useGzip bool) {
-	http.HandleFunc(route, func(w http.ResponseWriter, r *http.Request) {
+	handle(http.MethodGet, route, func(w http.ResponseWriter, r *http.Request) {
 		b, err := os.ReadFile(filePath)
 		if err != nil {
 			http.NotFound(w, r)
@@ -572,7 +572,7 @@ func registerImageRoutes(rootDir, urlPrefix string) {
 		}
 		route := urlPrefix + filepath.ToSlash(rel)
 		filePath := path
-		http.HandleFunc(route, func(w http.ResponseWriter, r *http.Request) {
+		handle(http.MethodGet, route, func(w http.ResponseWriter, r *http.Request) {
 			b, err := os.ReadFile(filePath)
 			if err != nil {
 				http.Error(w, "not found", 404)
@@ -604,6 +604,16 @@ func (w *responseWriter) Write(p []byte) (n int, err error) {
 	return n, err
 }
 
+func handle(method string, path string, h http.HandlerFunc) {
+	http.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != method && r.Method != http.MethodHead {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		h(w, r)
+	})
+}
+
 func main() {
 	flag.Parse()
 	if *debug {
@@ -633,7 +643,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	http.HandleFunc("/api/paths", func(w http.ResponseWriter, r *http.Request) {
+	handle(http.MethodGet, "/api/paths", func(w http.ResponseWriter, r *http.Request) {
 		body := []byte("[]")
 		if p := srv.paths.Load(); p != nil {
 			body = *p
@@ -644,7 +654,7 @@ func main() {
 		gz.Write(body)
 		gz.Close()
 	})
-	http.HandleFunc("/api/neighborhoods", func(w http.ResponseWriter, r *http.Request) {
+	handle(http.MethodGet, "/api/neighborhoods", func(w http.ResponseWriter, r *http.Request) {
 		body := []byte(`{"neighborhoods":[],"features":[]}`)
 		if p := srv.nbdStats.Load(); p != nil && len(p.Bytes) > 0 {
 			body = p.Bytes
@@ -655,7 +665,7 @@ func main() {
 		gz.Write(body)
 		gz.Close()
 	})
-	http.HandleFunc("/api/photos", func(w http.ResponseWriter, r *http.Request) {
+	handle(http.MethodGet, "/api/photos", func(w http.ResponseWriter, r *http.Request) {
 		var body []byte
 		if p := srv.photos.Load(); p != nil && len(p.Photos) > 0 {
 			body, _ = json.Marshal(p)
@@ -669,7 +679,7 @@ func main() {
 		gz.Write(body)
 		gz.Close()
 	})
-	http.HandleFunc("/api/streets", func(w http.ResponseWriter, r *http.Request) {
+	handle(http.MethodGet, "/api/streets", func(w http.ResponseWriter, r *http.Request) {
 		body := []byte("[]")
 		if srv.streetsBody != nil {
 			body = srv.streetsBody
@@ -680,7 +690,7 @@ func main() {
 		gz.Write(body)
 		gz.Close()
 	})
-	http.HandleFunc("/api/draw", func(w http.ResponseWriter, r *http.Request) {
+	handle(http.MethodGet, "/api/draw", func(w http.ResponseWriter, r *http.Request) {
 		body := []byte(`{"streets":"","paths":"","bounds":[0,0,0,0]}`)
 		if b := srv.drawCoreBody.Load(); b != nil {
 			body = *b
@@ -691,7 +701,7 @@ func main() {
 		gz.Write(body)
 		gz.Close()
 	})
-	http.HandleFunc("/api/draw/overlay", func(w http.ResponseWriter, r *http.Request) {
+	handle(http.MethodGet, "/api/draw/overlay", func(w http.ResponseWriter, r *http.Request) {
 		body := []byte(`{"labels":[]}`)
 		if b := srv.drawOverlayBody.Load(); b != nil {
 			body = *b
@@ -701,6 +711,17 @@ func main() {
 		gz := gzip.NewWriter(w)
 		gz.Write(body)
 		gz.Close()
+	})
+	handle(http.MethodPost, "/api/error", func(w http.ResponseWriter, r *http.Request) {
+		const maxBodyLen = 64 << 10
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyLen+1))
+		if err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+		slog.Warn("client error", "len", len(body), "message", string(body), "body too large", len(body) > maxBodyLen)
+		w.WriteHeader(http.StatusOK)
 	})
 	srv.registerStaticRoutes(staticDir)
 
@@ -750,10 +771,6 @@ func main() {
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
 		h.Set("Permissions-Policy", "camera=(), geolocation=(), microphone=(), payment=(), usb=()")
 		h.Set("Content-Security-Policy", "default-src 'none'; base-uri 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'")
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			http.Error(rw, "Method Not Allowed", http.StatusMethodNotAllowed)
-			return
-		}
 		mux.ServeHTTP(rw, r)
 	})
 

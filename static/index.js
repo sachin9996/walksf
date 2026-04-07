@@ -609,6 +609,10 @@ function updateRuler(w, h) {
   const spanLat = maxLat - minLat;
   const stepLon = pickRulerStep(spanLon, w - RULER_LEFT_INSET);
   const stepLat = pickRulerStep(spanLat, h - RULER_BOTTOM_INSET);
+  const minLatPad = minLat - stepLat;
+  const maxLatPad = maxLat + stepLat;
+  const minLonPad = minLon - stepLon;
+  const maxLonPad = maxLon + stepLon;
 
   const latLabelsEl = document.getElementById("rulerLatLabels");
   const lonLabelsEl = document.getElementById("rulerLonLabels");
@@ -632,9 +636,9 @@ function updateRuler(w, h) {
     leftX1 = p0h.x,
     leftY1 = p0h.y;
   const leftDy = leftY1 - leftY0;
-  let lat = Math.ceil(maxLat / stepLat) * stepLat;
-  if (lat > maxLat) lat -= stepLat;
-  while (lat >= minLat) {
+  let lat = Math.ceil(maxLatPad / stepLat) * stepLat;
+  if (lat > maxLatPad) lat -= stepLat;
+  while (lat >= minLatPad) {
     const contentY = ty - lat * scale;
     if (Math.abs(leftDy) > 1e-10) {
       const t = (contentY - leftY0) / leftDy;
@@ -661,9 +665,9 @@ function updateRuler(w, h) {
     bottomX1 = pwh.x,
     bottomY1 = pwh.y;
   const bottomDx = bottomX1 - bottomX0;
-  let lon = Math.floor(minLon / stepLon) * stepLon;
-  if (lon < minLon) lon += stepLon;
-  while (lon <= maxLon) {
+  let lon = Math.floor(minLonPad / stepLon) * stepLon;
+  if (lon < minLonPad) lon += stepLon;
+  while (lon <= maxLonPad) {
     const contentX = lon * scale + tx;
     if (Math.abs(bottomDx) > 1e-10) {
       const t = (contentX - bottomX0) / bottomDx;

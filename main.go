@@ -458,7 +458,7 @@ func (s *Server) tick() {
 		}
 		if total > 0 {
 			frac := expl / total
-			s.explPct.Store(new(fmt.Sprintf("%.1f", math.Round(frac*1000)/10)))
+			s.explPct.Store(new(fmt.Sprintf("%.2f", math.Round(frac*10000)/100)))
 			s.explKm.Store(new(fmt.Sprintf("%.1f", expl)))
 			s.totalKm.Store(new(fmt.Sprintf("%.1f", total)))
 			s.explFrac.Store(new(fmt.Sprintf("%.4g", frac)))

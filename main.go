@@ -14,6 +14,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"math"
 	"net/http"
 	"os"
@@ -168,7 +169,9 @@ type Server struct {
 
 	nbdStats atomic.Pointer[nbdStats]
 	paths    atomic.Pointer[[]byte]
-	photos   atomic.Pointer[photoData]
+
+	photoHashes atomic.Value // map[string]string
+	photos      atomic.Pointer[photoData]
 
 	updateTime atomic.Int64
 
@@ -230,6 +233,7 @@ func newServer() (*Server, error) {
 		s.streetsBody = body
 	}
 	s.storeDrawPayload(nil, nil, nil)
+	s.photoHashes.Store(make(map[string]string))
 	s.photos.Store(&photoData{Photos: nil})
 	slog.Debug("startup", "step", "marshal_streets_and_draw_payload", "duration_ms", time.Since(t0).Milliseconds())
 
@@ -271,6 +275,30 @@ func fileSHA256(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func getImageHashes(dir string) (map[string]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("readDir: %w", err)
+	}
+	out := make(map[string]string)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(strings.ToLower(name), ".webp") {
+			continue
+		}
+		p := filepath.Join(dir, name)
+		h, err := fileSHA256(p)
+		if err != nil {
+			return nil, err
+		}
+		out[name] = h
+	}
+	return out, nil
 }
 
 func zipExportTime(z *zip.Reader) (time.Time, error) {
@@ -331,8 +359,26 @@ func (s *Server) tick() {
 		slog.Debug("tick", "step", "done", "duration_ms", time.Since(start).Milliseconds())
 	}()
 
-	dir := os.DirFS(dataDir)
 	t0 := time.Now()
+	photosDir := filepath.Join(staticDir, "images", "full")
+	hashes, err := getImageHashes(photosDir)
+	if err != nil {
+		slog.Error("photos dir hashes", "dir", photosDir, "err", err)
+	} else {
+		prev := s.photoHashes.Load().(map[string]string)
+		if !maps.Equal(hashes, prev) {
+			if payload := processImagesDir(photosDir); payload != nil {
+				s.photos.Store(payload)
+			} else {
+				s.photos.Store(&photoData{Photos: nil})
+			}
+			s.photoHashes.Store(hashes)
+			slog.Debug("tick", "step", "images", "duration_ms", time.Since(t0).Milliseconds(), "changed", true)
+		}
+	}
+
+	dir := os.DirFS(dataDir)
+	t0 = time.Now()
 	entries, err := fs.Glob(dir, "export*.zip")
 	if err != nil {
 		slog.Error("tick glob data dir", "err", err)
@@ -467,14 +513,6 @@ func (s *Server) tick() {
 
 	s.storeDrawPayload(visitedList, visitedSegs, st)
 	slog.Debug("tick", "step", "nbd_and_draw", "duration_ms", time.Since(t0).Milliseconds())
-
-	t0 = time.Now()
-	if payload := processImagesDir(filepath.Join(staticDir, "images", "full")); payload != nil {
-		s.photos.Store(payload)
-	} else {
-		s.photos.Store(&photoData{Photos: nil})
-	}
-	slog.Debug("tick", "step", "images", "duration_ms", time.Since(t0).Milliseconds())
 }
 
 func (s *Server) registerStaticRoutes(staticDir string) {

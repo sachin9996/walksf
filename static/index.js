@@ -137,8 +137,19 @@ let dimTimeout = null;
 
 const activePointers = new Map();
 let twoFingerState = null;
-const ROTATE_ANGLE_THRESHOLD = 0.035;
+
+const ROTATE_ANGLE_THRESHOLD = 0.032;
 const ROTATE_VS_ZOOM_RATIO = 2;
+/** When span change is this small (ratio), treat it as second-finger landing noise (common after one-finger pan) and use a softer angle bar. */
+const ROTATE_PINCH_NOISE_RATIO = 0.014;
+const ROTATE_PINCH_NOISE_RATIO_FROM_PAN = 0.022;
+/** Minimum angle (rad) to count as rotate when pinch delta is in the noise band. */
+const ROTATE_ANGLE_IF_PINCH_NOISE = 0.02;
+const ROTATE_ANGLE_IF_PINCH_NOISE_FROM_PAN = 0.018;
+/** Ignore sub-pixel jitter so we do not classify zoom vs rotate on the first move when deltas are still 0 vs the touch-down baseline. */
+const TWO_FINGER_NEGLIGIBLE_ANGLE = 2e-5;
+const TWO_FINGER_NEGLIGIBLE_DIST_RATIO = 1e-8;
+
 let compassDrag = false;
 const NBD_TOOLTIP_DELAY_MS = 140;
 let nbdTooltipDelayTimeout = null;
@@ -1130,7 +1141,9 @@ function clearTwoFingerAndHover() {
 const mapWrap = document.getElementById("mapWrap");
 
 function onMapPointerDown(e) {
-  if (!mapWrap.contains(e.target)) return;
+  if (!mapWrap.contains(e.target)) {
+    return;
+  }
   const onPin = e.target.closest && e.target.closest(".photo-pin");
   activePointers.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
   const singlePointerOnPin = activePointers.size === 1 && onPin && e.pointerType !== "touch";
@@ -1143,11 +1156,12 @@ function onMapPointerDown(e) {
   if (!singlePointerOnPin && mapWrap.setPointerCapture) mapWrap.setPointerCapture(e.pointerId);
   zoomTarget = null;
   if (activePointers.size === 2) {
+    const fromOneFingerPan = drag !== null && drag.moved === true;
     drag = null;
     clearTwoFingerAndHover();
     const g = twoPointerGeometry();
     if (g) {
-      twoFingerState = { gestureMode: null, lastDist: g.d, lastAngle: g.angle };
+      twoFingerState = { gestureMode: null, lastDist: g.d, lastAngle: g.angle, fromOneFingerPan };
     }
   } else if (activePointers.size === 1) {
     twoFingerState = null;
@@ -1158,7 +1172,7 @@ function onMapPointerDown(e) {
         y = e.clientY - rect.top;
       const { w, h } = getCanvasCssSize();
       const { lon, lat } = unproject(x, y, w, h);
-      drag = { lon0: lon, lat0: lat };
+      drag = { lon0: lon, lat0: lat, moved: false };
       canvas.style.cursor = "move";
     }
     if (e.pointerType === "touch") {
@@ -1175,7 +1189,9 @@ function onMapPointerDown(e) {
 }
 
 function onMapPointerMove(e) {
-  if (!mapWrap.contains(e.target)) return;
+  if (!mapWrap.contains(e.target)) {
+    return;
+  }
   activePointers.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
   const rect = canvas.getBoundingClientRect();
   const { w, h } = getCanvasCssSize();
@@ -1195,25 +1211,41 @@ function onMapPointerMove(e) {
         const deltaAngle = currentAngle - twoFingerState.lastAngle;
         const deltaAngleNorm = Math.atan2(Math.sin(deltaAngle), Math.cos(deltaAngle));
         const deltaDistRatio = (d - twoFingerState.lastDist) / twoFingerState.lastDist;
-        if (
-          Math.abs(deltaAngleNorm) > ROTATE_ANGLE_THRESHOLD &&
-          Math.abs(deltaAngleNorm) > ROTATE_VS_ZOOM_RATIO * Math.abs(deltaDistRatio)
-        ) {
-          twoFingerState.gestureMode = "rotate";
+        const absAngle = Math.abs(deltaAngleNorm);
+        const absDistR = Math.abs(deltaDistRatio);
+        const negligibleMotion = absAngle < TWO_FINGER_NEGLIGIBLE_ANGLE && absDistR < TWO_FINGER_NEGLIGIBLE_DIST_RATIO;
+        if (negligibleMotion) {
+          twoFingerState.lastDist = d;
+          twoFingerState.lastAngle = currentAngle;
         } else {
-          twoFingerState.gestureMode = "zoom";
+          const fromPan = !!twoFingerState.fromOneFingerPan;
+          const pinchNoiseLimit = fromPan ? ROTATE_PINCH_NOISE_RATIO_FROM_PAN : ROTATE_PINCH_NOISE_RATIO;
+          const angleIfPinchNoise = fromPan ? ROTATE_ANGLE_IF_PINCH_NOISE_FROM_PAN : ROTATE_ANGLE_IF_PINCH_NOISE;
+          const pinchLooksLikeNoise = absDistR < pinchNoiseLimit;
+          const rotateAnglePass =
+            absAngle > ROTATE_ANGLE_THRESHOLD ||
+            (pinchLooksLikeNoise && absAngle > angleIfPinchNoise && absAngle > ROTATE_VS_ZOOM_RATIO * absDistR);
+          const rotateVsZoomPass = absAngle > ROTATE_VS_ZOOM_RATIO * absDistR;
+          const choseRotate = rotateAnglePass && rotateVsZoomPass;
+          if (choseRotate) {
+            twoFingerState.gestureMode = "rotate";
+          } else {
+            twoFingerState.gestureMode = "zoom";
+          }
         }
       }
-      if (twoFingerState.gestureMode === "zoom") {
-        applyZoomAt(canvasCx, canvasCy, k);
-        twoFingerState.lastDist = d;
-      } else {
-        const deltaAngle = currentAngle - twoFingerState.lastAngle;
-        angle += deltaAngle;
-        if (k !== 1) applyZoomAt(canvasCx, canvasCy, k);
-        twoFingerState.lastDist = d;
-        twoFingerState.lastAngle = currentAngle;
-        scheduleDraw();
+      if (twoFingerState.gestureMode !== null) {
+        if (twoFingerState.gestureMode === "zoom") {
+          applyZoomAt(canvasCx, canvasCy, k);
+          twoFingerState.lastDist = d;
+        } else {
+          const deltaAngle = currentAngle - twoFingerState.lastAngle;
+          angle += deltaAngle;
+          if (k !== 1) applyZoomAt(canvasCx, canvasCy, k);
+          twoFingerState.lastDist = d;
+          twoFingerState.lastAngle = currentAngle;
+          scheduleDraw();
+        }
       }
     }
   } else if (activePointers.size === 1 && drag) {
@@ -1224,6 +1256,7 @@ function onMapPointerMove(e) {
     const { x: contentX, y: contentY } = canvasToContent(x, y, w, h);
     tx = contentX - drag.lon0 * scale;
     ty = contentY + drag.lat0 * scale;
+    drag.moved = true;
     scheduleDraw();
   }
   pointerAt(e.clientX, e.clientY);
@@ -1251,7 +1284,7 @@ function onPointerUp(e) {
         y = pos.clientY - rect.top;
       const { w, h } = getCanvasCssSize();
       const { lon, lat } = unproject(x, y, w, h);
-      drag = { lon0: lon, lat0: lat };
+      drag = { lon0: lon, lat0: lat, moved: false };
     }
   } else {
     twoFingerState = null;

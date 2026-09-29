@@ -9,24 +9,23 @@ OG_W, OG_H = 1200, 630
 BG = (10, 22, 40)
 FONT_SIZE = 10
 
-SKIP = {
-    "service", "footway", "path", "cycleway", "steps",
-    "pedestrian", "track", "construction", "proposed",
+# Unbuilt or non-public centerlines. classcode 0 ("other": paper, private,
+# pedestrian) is omitted by not appearing in TIERS.
+SKIP_LAYERS = {
+    "PAPER", "PAPER_FWYS", "PAPER_WATER", "PSEUDO",
+    "PRIVATE", "PRIVATE_PARKING",
 }
 
+# DataSF class codes: 1 freeway, 2 major, 3 arterial, 4 collector,
+# 5 residential, 6 ramp.
 TIERS = {
-    "motorway":     {"color": (200, 220, 250), "sample": 1.0, "weight": 5},
-    "motorway_link":{"color": (180, 200, 235), "sample": 1.0, "weight": 4},
-    "trunk":        {"color": (195, 215, 245), "sample": 1.0, "weight": 5},
-    "trunk_link":   {"color": (170, 195, 230), "sample": 1.0, "weight": 4},
-    "primary":      {"color": (140, 170, 210), "sample": 1.0, "weight": 3},
-    "secondary":    {"color": (75, 100, 140),  "sample": 0.6, "weight": 2},
-    "tertiary":     {"color": (55, 75, 115),   "sample": 0.4, "weight": 2},
-    "residential":  {"color": (35, 50, 80),    "sample": 0.12, "weight": 1},
-    "unclassified": {"color": (35, 50, 80),    "sample": 0.12, "weight": 1},
-    "living_street":{"color": (35, 50, 80),    "sample": 0.12, "weight": 1},
+    "1": {"color": (200, 220, 250), "sample": 1.0, "weight": 5},
+    "6": {"color": (180, 200, 235), "sample": 1.0, "weight": 4},
+    "2": {"color": (160, 190, 230), "sample": 1.0, "weight": 4},
+    "3": {"color": (120, 155, 200), "sample": 1.0, "weight": 3},
+    "4": {"color": (70, 95, 140),   "sample": 0.55, "weight": 2},
+    "5": {"color": (35, 50, 80),    "sample": 0.14, "weight": 1},
 }
-DEFAULT_TIER = {"color": (45, 60, 95), "sample": 0.3, "weight": 1}
 
 H_CHARS = {1: ".", 2: "-", 3: "-", 4: "=", 5: "="}
 V_CHARS = {1: ".", 2: ":", 3: "|", 4: "|", 5: "!"}
@@ -95,10 +94,12 @@ def main():
     min_lat, max_lat = 37.685, 37.825
     lon_span = max_lon - min_lon
     lat_span = max_lat - min_lat
+    # A degree of longitude is cos(lat) times a degree of latitude.
+    lon_scale = math.cos(math.radians((min_lat + max_lat) / 2))
 
     pixel_w = cols * char_w
     pixel_h = rows * char_h
-    aspect_geo = lon_span / lat_span
+    aspect_geo = (lon_span * lon_scale) / lat_span
     aspect_pixel = pixel_w / pixel_h
     if aspect_pixel > aspect_geo:
         eff_pixel_w = int(pixel_h * aspect_geo)
@@ -121,47 +122,50 @@ def main():
     grid_color = [[(0, 0, 0)] * cols for _ in range(rows)]
     grid_dir = [["h"] * cols for _ in range(rows)]
 
-    layers = [
-        ("residential", "unclassified", "living_street"),
-        ("tertiary",),
-        ("secondary",),
-        ("primary",),
-        ("trunk_link", "motorway_link"),
-        ("trunk", "motorway"),
-    ]
+    # Faint streets first so freeways and majors overwrite them.
+    draw_order = ["5", "4", "3", "2", "6", "1"]
 
-    feats_by_hw = {}
+    feats_by_class = {}
     for feat in data["features"]:
-        hw = feat.get("properties", {}).get("highway", "")
-        if hw in SKIP:
+        props = feat.get("properties") or {}
+        if props.get("active") is False:
             continue
-        feats_by_hw.setdefault(hw, []).append(feat)
+        if props.get("layer") in SKIP_LAYERS:
+            continue
+        cc = props.get("classcode")
+        if cc not in TIERS:
+            continue
+        geom = feat.get("geometry") or {}
+        if geom.get("type") != "LineString" or len(geom.get("coordinates") or []) < 2:
+            continue
+        feats_by_class.setdefault(cc, []).append(feat)
 
-    for group in layers:
-        for hw in group:
-            tier = TIERS.get(hw, DEFAULT_TIER)
-            for feat in feats_by_hw.get(hw, []):
-                name = feat.get("properties", {}).get("name", "")
-                fid = f"{hw}:{name}:{feat['geometry']['coordinates'][0]}"
-                if stable_hash(fid) > tier["sample"]:
-                    continue
-                coords = feat["geometry"]["coordinates"]
-                w = tier["weight"]
-                for i in range(len(coords) - 1):
-                    x0, y0 = project(coords[i][0], coords[i][1])
-                    x1, y1 = project(coords[i + 1][0], coords[i + 1][1])
-                    dx_geo = x1 - x0
-                    dy_geo = y1 - y0
-                    d = classify_angle(dx_geo, dy_geo)
-                    ix0, iy0 = int(round(x0)), int(round(y0))
-                    ix1, iy1 = int(round(x1)), int(round(y1))
-                    for cx, cy in bresenham(ix0, iy0, ix1, iy1):
-                        if 0 <= cx < cols and 0 <= cy < rows:
-                            grid_dirs[cy][cx].add(d)
-                            if w >= grid_weight[cy][cx]:
-                                grid_weight[cy][cx] = w
-                                grid_color[cy][cx] = tier["color"]
-                                grid_dir[cy][cx] = d
+    for cc in draw_order:
+        tier = TIERS[cc]
+        for feat in feats_by_class.get(cc, []):
+            props = feat.get("properties") or {}
+            name = props.get("streetname") or ""
+            cnn = props.get("cnn") or ""
+            fid = f"{cc}:{cnn}:{name}:{feat['geometry']['coordinates'][0]}"
+            if stable_hash(fid) > tier["sample"]:
+                continue
+            coords = feat["geometry"]["coordinates"]
+            w = tier["weight"]
+            for i in range(len(coords) - 1):
+                x0, y0 = project(coords[i][0], coords[i][1])
+                x1, y1 = project(coords[i + 1][0], coords[i + 1][1])
+                dx_geo = x1 - x0
+                dy_geo = y1 - y0
+                d = classify_angle(dx_geo, dy_geo)
+                ix0, iy0 = int(round(x0)), int(round(y0))
+                ix1, iy1 = int(round(x1)), int(round(y1))
+                for cx, cy in bresenham(ix0, iy0, ix1, iy1):
+                    if 0 <= cx < cols and 0 <= cy < rows:
+                        grid_dirs[cy][cx].add(d)
+                        if w >= grid_weight[cy][cx]:
+                            grid_weight[cy][cx] = w
+                            grid_color[cy][cx] = tier["color"]
+                            grid_dir[cy][cx] = d
 
     grid_char = [[" "] * cols for _ in range(rows)]
     for cy in range(rows):

@@ -1,6 +1,6 @@
 module walksf
 
-go 1.27.0
+go 1.27.1
 
 require github.com/dsoprea/go-exif/v3 v3.0.1
 

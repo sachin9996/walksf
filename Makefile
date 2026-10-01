@@ -15,4 +15,4 @@ all:
 		-e 's#index\.[^./]+\.css#index.$(CSS_HASH).css#g' \
 		-e 's#index\.[^./]+\.js#index.$(JS_HASH).js#g' \
 		static/index.html main.go
-	GOEXPERIMENT=jsonv2 go build -o walksf .
+	go build -o walksf .

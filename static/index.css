@@ -301,7 +301,7 @@ body {
 }
 
 #footerStats {
-  font: 12px/1.4 sans-serif;
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   position: fixed;
   bottom: 36px;
   right: 20px;
@@ -343,6 +343,98 @@ body {
   color: rgba(255, 255, 255, 0.2);
 }
 
+#footerStats .footer-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.timeline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.timeline[hidden] {
+  display: none;
+}
+
+.timeline-label {
+  min-width: 5.5em;
+  text-align: right;
+  color: rgba(255, 255, 255, 0.4);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+#timelineSlider {
+  --fill: 100%;
+  -webkit-appearance: none;
+  appearance: none;
+  width: 135px;
+  height: 18px;
+  background: transparent;
+  cursor: pointer;
+  touch-action: none;
+}
+
+#timelineSlider::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    rgba(255, 200, 100, 0.75) var(--fill),
+    rgba(255, 255, 255, 0.15) var(--fill)
+  );
+}
+
+#timelineSlider::-moz-range-track {
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    rgba(255, 200, 100, 0.75) var(--fill),
+    rgba(255, 255, 255, 0.15) var(--fill)
+  );
+}
+
+#timelineSlider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4.5px;
+  border: none;
+  border-radius: 50%;
+  background: rgb(255, 200, 100);
+}
+
+#timelineSlider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: none;
+  border-radius: 50%;
+  background: rgb(255, 200, 100);
+}
+
+#timelineSlider:focus {
+  outline: none;
+}
+
+#timelineSlider:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px rgba(255, 200, 100, 0.35);
+}
+
+#timelineSlider:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 3px rgba(255, 200, 100, 0.35);
+}
+
+@media (max-width: 768px) {
+  #timelineSlider {
+    width: 90px;
+  }
+}
+
 #footerStats .footer-github {
   display: inline-flex;
   align-items: center;
@@ -364,6 +456,12 @@ body {
 
 #footerStats .footer-github:hover .footer-github-icon {
   opacity: 0.5;
+}
+
+@media (max-width: 768px) {
+  #footerStats {
+    font-size: 8px;
+  }
 }
 
 .scale-compass-wrap {

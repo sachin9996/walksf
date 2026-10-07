@@ -10,6 +10,6 @@
 
 **Data:** Expects `data/export.zip` with `apple_health_export/workout-routes/*.gpx` and optionally `apple_health_export/export_cda.xml` for export time. Server picks the zip with the latest export time (from CDA effectiveTime, else file mtime).
 
-**APIs:** `GET /api/paths` (JSON array of features), `GET /api/neighborhoods`, `GET /api/streets`. Static under `/static/`.
+**APIs:** `GET /api/paths` (JSON array of features), `GET /api/neighborhoods`, `GET /api/streets`. Static under `/static/`. `GET /api/draw` `paths` is an object keyed by `"YYYY-MM"` whose values are SVG path strings of segments *first* walked that month (route month comes from the GPX filename); `progress.explored_km` is cumulative km per month. The footer timeline slider uses these to show exploration through a selected month (photos filtered by their EXIF `month`).
 
 **UI notes:** Scale bar and “last updated” are positioned inside the lat/lon ruler; ruler insets are `RULER_LEFT_INSET` / `RULER_BOTTOM_INSET` in `index.js`. Dimming uses class `scale-dimmed` after idle.

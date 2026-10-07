@@ -17,7 +17,7 @@
   <meta name="twitter:image" content="https://walksf.quest/static/images/preview.png">
   <title>Walk SF</title>
   <link rel="icon" href="/static/images/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/index.ed83d8cfdc1d.css">
+  <link rel="stylesheet" href="/static/index.15e66cfaa60a.css">
 </head>
 
 <body>
@@ -57,12 +57,19 @@
     </div>
   </div>
   <div id="footerStats">
-    <a href="https://github.com/sachin9996/walksf" target="_blank" rel="noopener" class="footer-github"
-      aria-label="View on GitHub">
-      <img src="/static/images/github.svg" alt="" class="footer-github-icon" aria-hidden="true">
-    </a>
+    <div class="footer-top">
+      <div id="timeline" class="timeline" hidden>
+        <span id="timelineLabel" class="timeline-label" aria-hidden="true"></span>
+        <input type="range" id="timelineSlider" min="0" max="0" step="1" value="0"
+          aria-label="Show exploration through month">
+      </div>
+      <a href="https://github.com/sachin9996/walksf" target="_blank" rel="noopener" class="footer-github"
+        aria-label="View on GitHub">
+        <img src="/static/images/github.svg" alt="" class="footer-github-icon" aria-hidden="true">
+      </a>
+    </div>
     <div class="completion-line">
-      <span id="completion" aria-live="polite">__EXPL_PCT__% complete</span>
+      <span id="completion" aria-live="polite">__EXPL_PCT_PADDED__% complete</span>
       <span class="completion-km">(__EXPL_KM__/__TOTAL_KM__ km)</span>
     </div>
     <div id="updated">__LAST_UPDATED_TIMESTAMP__</div>
@@ -94,7 +101,7 @@
       <span class="photo-modal-coords"></span>
     </div>
   </div>
-  <script src="/static/index.04d64062d7a3.js" defer></script>
+  <script src="/static/index.2544e7c758f7.js" defer></script>
 </body>
 
 </html>

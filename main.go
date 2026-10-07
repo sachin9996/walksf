@@ -20,7 +20,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -61,6 +63,7 @@ type streetFeat struct {
 		Coordinates [][]float64 `json:"coordinates"`
 	} `json:"geometry"`
 	Properties map[string]any `json:"properties,omitempty"`
+	Month      int            `json:"-"`
 }
 
 type nbdFeat struct {
@@ -77,6 +80,8 @@ type nbdStats struct {
 	List  []nbdRow `json:"neighborhoods"`
 	Geo   []any    `json:"features"`
 	Bytes []byte
+	// MonthlyExplKm[i] is the explored km first walked in month i.
+	MonthlyExplKm []float64
 }
 
 type nbdRow struct {
@@ -106,10 +111,18 @@ type drawNbdFeat struct {
 }
 
 type drawCorePayload struct {
-	Streets       string           `json:"streets"`
-	Paths         string           `json:"paths"`
-	Bounds        [4]float64       `json:"bounds"`
-	Neighborhoods drawCoreNbdBlock `json:"neighborhoods,omitempty"`
+	Streets string `json:"streets"`
+	// Paths maps "YYYY-MM" to the segments first walked in that month.
+	Paths         map[string]string `json:"paths"`
+	Progress      drawProgress      `json:"progress"`
+	Bounds        [4]float64        `json:"bounds"`
+	Neighborhoods drawCoreNbdBlock  `json:"neighborhoods,omitempty"`
+}
+
+type drawProgress struct {
+	TotalKm float64 `json:"total_km"`
+	// ExploredKm maps "YYYY-MM" to the cumulative explored km through that month.
+	ExploredKm map[string]float64 `json:"explored_km"`
 }
 
 type drawCoreNbdBlock struct {
@@ -127,6 +140,7 @@ type imageMetadata struct {
 	Lat      float64 `json:"lat"`
 	Lon      float64 `json:"lon"`
 	Date     string  `json:"date,omitempty"`
+	Month    string  `json:"month,omitempty"`
 	URL      string  `json:"url"`
 	ThumbURL string  `json:"thumb_url,omitempty"`
 }
@@ -162,10 +176,12 @@ type Server struct {
 	drawCoreBody    atomic.Pointer[[]byte]
 	drawOverlayBody atomic.Pointer[[]byte]
 
-	explKm   atomic.Pointer[string]
-	totalKm  atomic.Pointer[string]
-	explPct  atomic.Pointer[string]
-	explFrac atomic.Pointer[string]
+	explKm  atomic.Pointer[string]
+	totalKm atomic.Pointer[string]
+	explPct atomic.Pointer[string]
+	// explPctPadded is explPct zero-padded for the fixed-width footer.
+	explPctPadded atomic.Pointer[string]
+	explFrac      atomic.Pointer[string]
 
 	nbdStats atomic.Pointer[nbdStats]
 	paths    atomic.Pointer[[]byte]
@@ -178,8 +194,8 @@ type Server struct {
 	cache *cache
 }
 
-func (s *Server) storeDrawPayload(pathFeats []streetFeat, visitedSegs map[segmentKey]struct{}, st *nbdStats) {
-	core := buildDrawCore(pathFeats, visitedSegs, st)
+func (s *Server) storeDrawPayload(pathFeats []streetFeat, visitedSegs map[segmentKey]int, months []string, st *nbdStats) {
+	core := buildDrawCore(pathFeats, visitedSegs, months, st)
 	coreBody, err := json.Marshal(core)
 	if err == nil {
 		s.drawCoreBody.Store(&coreBody)
@@ -290,7 +306,7 @@ func newServer() (*Server, error) {
 	if err == nil {
 		s.streetsBody = body
 	}
-	s.storeDrawPayload(nil, nil, nil)
+	s.storeDrawPayload(nil, nil, nil, nil)
 	s.imageHashes.Store(make(map[string]string))
 	s.imagesMetadata.Store(&imagesMetadata{Images: nil})
 	slog.Debug("startup", "step", "marshal_streets_and_draw_payload", "duration_ms", time.Since(t0).Milliseconds())
@@ -303,16 +319,16 @@ func newServer() (*Server, error) {
 		if json.Unmarshal(nb, &nbdDoc) == nil {
 			nbds = nbdDoc.Features
 			slog.Debug("startup", "step", "load_neighborhoods", "duration_ms", time.Since(t0).Milliseconds(), "count", len(nbds))
-			if st := computeNbdStats(nil); st != nil {
+			if st := computeNbdStats(nil, 0); st != nil {
 				s.nbdStats.Store(st)
-				s.storeDrawPayload(nil, nil, st)
+				s.storeDrawPayload(nil, nil, nil, st)
 			}
 		}
 	} else {
 		slog.Debug("startup", "step", "load_neighborhoods", "duration_ms", time.Since(t0).Milliseconds(), "skipped", true)
 	}
 	if s.drawCoreBody.Load() == nil {
-		s.storeDrawPayload(nil, nil, nil)
+		s.storeDrawPayload(nil, nil, nil, nil)
 	}
 
 	t0 = time.Now()
@@ -531,7 +547,7 @@ func (s *Server) tick() {
 	slog.Debug("tick", "step", "build_paths", "duration_ms", time.Since(t0).Milliseconds(), "activities", len(paths))
 
 	t0 = time.Now()
-	visitedList, visitedSegs := matchPathsToStreets(paths)
+	visitedList, visitedSegs, months := matchPathsToStreets(paths)
 	slog.Debug("tick", "step", "match_paths", "duration_ms", time.Since(t0).Milliseconds(), "visited_segments", len(visitedList))
 
 	t0 = time.Now()
@@ -551,7 +567,7 @@ func (s *Server) tick() {
 	slog.Debug("tick", "step", "marshal_store", "duration_ms", time.Since(t0).Milliseconds())
 
 	t0 = time.Now()
-	st := computeNbdStats(visitedSegs)
+	st := computeNbdStats(visitedSegs, len(months))
 	if st != nil {
 		s.nbdStats.Store(st)
 	}
@@ -564,14 +580,17 @@ func (s *Server) tick() {
 		}
 		if total > 0 {
 			frac := expl / total
-			s.explPct.Store(new(fmt.Sprintf("%.2f", math.Round(frac*10000)/100)))
-			s.explKm.Store(new(fmt.Sprintf("%.1f", expl)))
-			s.totalKm.Store(new(fmt.Sprintf("%.1f", total)))
+			pct := math.Round(frac*10000) / 100
+			totalStr := fmt.Sprintf("%.1f", total)
+			s.explPct.Store(new(fmt.Sprintf("%.2f", pct)))
+			s.explPctPadded.Store(new(fmt.Sprintf("%05.2f", pct)))
+			s.explKm.Store(new(fmt.Sprintf("%0*.1f", len(totalStr), expl)))
+			s.totalKm.Store(new(totalStr))
 			s.explFrac.Store(new(fmt.Sprintf("%.4g", frac)))
 		}
 	}
 
-	s.storeDrawPayload(visitedList, visitedSegs, st)
+	s.storeDrawPayload(visitedList, visitedSegs, months, st)
 	slog.Debug("tick", "step", "nbd_and_draw", "duration_ms", time.Since(t0).Milliseconds())
 }
 
@@ -592,6 +611,7 @@ func (s *Server) registerStaticRoutes(staticDir string) {
 			updatedText = []byte("Last updated " + time.UnixMilli(ts).Format(time.RFC822Z))
 		}
 		html := bytes.Replace(tmpl, []byte("__LAST_UPDATED_TIMESTAMP__"), updatedText, 1)
+		html = bytes.Replace(html, []byte("__EXPL_PCT_PADDED__"), []byte(*s.explPctPadded.Load()), 1)
 		html = bytes.Replace(html, []byte("__EXPL_PCT__"), []byte(*s.explPct.Load()), -1)
 		html = bytes.Replace(html, []byte("__EXPL_KM__"), []byte(*s.explKm.Load()), 1)
 		html = bytes.Replace(html, []byte("__TOTAL_KM__"), []byte(*s.totalKm.Load()), 1)
@@ -599,7 +619,7 @@ func (s *Server) registerStaticRoutes(staticDir string) {
 		w.Write(html)
 	})
 
-	handle(http.MethodGet, "/static/index.ed83d8cfdc1d.css", func(w http.ResponseWriter, r *http.Request) {
+	handle(http.MethodGet, "/static/index.15e66cfaa60a.css", func(w http.ResponseWriter, r *http.Request) {
 		b, err := os.ReadFile(filepath.Join(staticDir, "index.css"))
 		if err != nil {
 			http.NotFound(w, r)
@@ -618,7 +638,7 @@ func (s *Server) registerStaticRoutes(staticDir string) {
 		}
 	})
 
-	handle(http.MethodGet, "/static/index.04d64062d7a3.js", func(w http.ResponseWriter, r *http.Request) {
+	handle(http.MethodGet, "/static/index.2544e7c758f7.js", func(w http.ResponseWriter, r *http.Request) {
 		b, err := os.ReadFile(filepath.Join(staticDir, "index.js"))
 		if err != nil {
 			http.NotFound(w, r)
@@ -778,7 +798,7 @@ func main() {
 		gz.Close()
 	})
 	handle(http.MethodGet, "/api/draw", func(w http.ResponseWriter, r *http.Request) {
-		body := []byte(`{"streets":"","paths":"","bounds":[0,0,0,0]}`)
+		body := []byte(`{"streets":"","paths":{},"bounds":[0,0,0,0]}`)
 		if b := srv.drawCoreBody.Load(); b != nil {
 			body = *b
 		}
@@ -901,6 +921,18 @@ type pathFeature struct {
 	Type       string         `json:"type"`
 	Geometry   pathGeometry   `json:"geometry"`
 	Properties map[string]any `json:"properties"`
+	Month      string         `json:"-"`
+}
+
+// Apple Health names routes by local start time, e.g. route_2024-02-04_7.37pm.gpx.
+var routeDateRe = regexp.MustCompile(`(\d{4}-\d{2})-\d{2}`)
+
+func routeMonth(name string) string {
+	m := routeDateRe.FindStringSubmatch(filepath.Base(name))
+	if m == nil {
+		return ""
+	}
+	return m[1]
 }
 
 func buildPathsFromZip(z *zip.Reader) ([]pathFeature, error) {
@@ -958,6 +990,7 @@ func buildPathsFromZip(z *zip.Reader) ([]pathFeature, error) {
 						Coordinates: coords,
 					},
 					Properties: map[string]any{},
+					Month:      routeMonth(f.Name),
 				})
 			}
 			resCh <- out
@@ -1068,32 +1101,29 @@ func haversineM(lon1, lat1, lon2, lat2 float64) float64 {
 	return earthRadiusM * c
 }
 
-func exifDateString(rootIfd *exif.Ifd) string {
+func exifDate(rootIfd *exif.Ifd) time.Time {
 	const exifTimeLayout = "2006:01:02 15:04:05"
-	tryTag := func(ifd *exif.Ifd, tagID uint16) string {
+	tryTag := func(ifd *exif.Ifd, tagID uint16) time.Time {
 		entries, err := ifd.FindTagWithId(tagID)
 		if err != nil || len(entries) == 0 {
-			return ""
+			return time.Time{}
 		}
 		s, err := entries[0].FormatFirst()
 		if err != nil || s == "" {
-			return ""
+			return time.Time{}
 		}
 		t, err := time.Parse(exifTimeLayout, s)
 		if err != nil {
-			return ""
+			return time.Time{}
 		}
-		return t.Format("Jan 2, 2006")
+		return t
 	}
 	if exifIfd, err := exif.FindIfdFromRootIfd(rootIfd, "IFD/Exif"); err == nil {
-		if d := tryTag(exifIfd, 0x9003); d != "" {
-			return d
+		if t := tryTag(exifIfd, 0x9003); !t.IsZero() {
+			return t
 		}
 	}
-	if d := tryTag(rootIfd, 0x0132); d != "" {
-		return d
-	}
-	return ""
+	return tryTag(rootIfd, 0x0132)
 }
 
 func processImagesDir(dirPath string) *imagesMetadata {
@@ -1197,9 +1227,12 @@ func processImagesDir(dirPath string) *imagesMetadata {
 			ID:       name,
 			Lat:      lat,
 			Lon:      lon,
-			Date:     exifDateString(rootIfd),
 			URL:      "/static/images/full/" + name,
 			ThumbURL: "/static/images/thumb/" + name,
+		}
+		if t := exifDate(rootIfd); !t.IsZero() {
+			rec.Date = t.Format("Jan 2, 2006")
+			rec.Month = t.Format("2006-01")
 		}
 		images = append(images, rec)
 	}
@@ -1232,46 +1265,84 @@ func angleDiffDeg(a, b float64) float64 {
 	return d
 }
 
-type pathGrid map[string][][]float64
+type gridPt struct {
+	Lon, Lat, Course float64
+	Month            int
+}
 
-func (g pathGrid) hasPoint(pt point, segmentBearingDeg float64) bool {
+// pathGrid cells hold points in ascending Month order.
+type pathGrid map[string][]gridPt
+
+func (g pathGrid) earliestMonth(pt point, segmentBearingDeg float64) (int, bool) {
+	best := -1
 	cx := int(math.Floor(pt.Lon / gridCellSize))
 	cy := int(math.Floor(pt.Lat / gridCellSize))
 	for dx := -1; dx <= 1; dx++ {
 		for dy := -1; dy <= 1; dy++ {
 			key := fmt.Sprintf("%d,%d", cx+dx, cy+dy)
 			for _, cell := range g[key] {
-				if len(cell) < 2 {
+				if best >= 0 && cell.Month >= best {
+					break
+				}
+				if haversineM(cell.Lon, cell.Lat, pt.Lon, pt.Lat) > pathMatchToleranceM {
 					continue
 				}
-				if haversineM(cell[0], cell[1], pt.Lon, pt.Lat) > pathMatchToleranceM {
-					continue
-				}
-				if len(cell) >= 3 && cell[2] != courseMissing {
-					course := cell[2]
+				if cell.Course != courseMissing {
 					opp := math.Mod(segmentBearingDeg+180, 360)
-					if angleDiffDeg(course, segmentBearingDeg) > headingToleranceDeg &&
-						angleDiffDeg(course, opp) > headingToleranceDeg {
+					if angleDiffDeg(cell.Course, segmentBearingDeg) > headingToleranceDeg &&
+						angleDiffDeg(cell.Course, opp) > headingToleranceDeg {
 						continue
 					}
 				}
-				return true
+				best = cell.Month
+				break
+			}
+			if best == 0 {
+				return 0, true
 			}
 		}
 	}
-	return false
+	return best, best >= 0
 }
 
 type segmentKey struct{ Si, J int }
 
-func matchPathsToStreets(paths []pathFeature) ([]streetFeat, map[segmentKey]struct{}) {
+func pathMonths(paths []pathFeature) ([]string, []int) {
+	var months []string
+	for _, p := range paths {
+		if p.Month != "" {
+			months = append(months, p.Month)
+		}
+	}
+	slices.Sort(months)
+	months = slices.Compact(months)
+	if len(months) == 0 {
+		months = []string{time.Now().Format("2006-01")}
+	}
+	idx := make([]int, len(paths))
+	for i, p := range paths {
+		if j, ok := slices.BinarySearch(months, p.Month); ok {
+			idx[i] = j
+		}
+	}
+	return months, idx
+}
+
+func matchPathsToStreets(paths []pathFeature) ([]streetFeat, map[segmentKey]int, []string) {
 	if len(streets) == 0 {
-		return nil, map[segmentKey]struct{}{}
+		return nil, map[segmentKey]int{}, nil
 	}
 
+	months, pathMonth := pathMonths(paths)
+	order := make([]int, len(paths))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortStableFunc(order, func(a, b int) int { return pathMonth[a] - pathMonth[b] })
+
 	grid := make(pathGrid)
-	for _, feat := range paths {
-		pts := feat.Geometry.Coordinates
+	for _, pi := range order {
+		pts := paths[pi].Geometry.Coordinates
 		if len(pts) < 2 {
 			continue
 		}
@@ -1279,19 +1350,19 @@ func matchPathsToStreets(paths []pathFeature) ([]streetFeat, map[segmentKey]stru
 			if len(p) < 2 {
 				continue
 			}
-			pt := []float64{p[0], p[1]}
+			gp := gridPt{Lon: p[0], Lat: p[1], Course: courseMissing, Month: pathMonth[pi]}
 			if len(p) >= 3 {
-				pt = append(pt, p[2])
+				gp.Course = p[2]
 			}
 			cx := int(math.Floor(p[0] / gridCellSize))
 			cy := int(math.Floor(p[1] / gridCellSize))
 			key := fmt.Sprintf("%d,%d", cx, cy)
-			grid[key] = append(grid[key], pt)
+			grid[key] = append(grid[key], gp)
 		}
 	}
 
 	n := len(streets)
-	visitedSegs := make(map[segmentKey]struct{})
+	visitedSegs := make(map[segmentKey]int)
 	var feats []streetFeat
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -1305,7 +1376,7 @@ func matchPathsToStreets(paths []pathFeature) ([]streetFeat, map[segmentKey]stru
 		}
 		wg.Go(func() {
 			var chunkFeats []streetFeat
-			chunkVis := make(map[segmentKey]struct{})
+			chunkVis := make(map[segmentKey]int)
 			for si := lo; si < hi; si++ {
 				coords := streets[si].Geometry.Coordinates
 				for j := 0; j < len(coords)-1; j++ {
@@ -1315,26 +1386,24 @@ func matchPathsToStreets(paths []pathFeature) ([]streetFeat, map[segmentKey]stru
 					}
 					mid := point{Lon: (a[0] + b[0]) / 2, Lat: (a[1] + b[1]) / 2}
 					segBearing := segmentBearingDeg(point{Lon: a[0], Lat: a[1]}, point{Lon: b[0], Lat: b[1]})
-					if grid.hasPoint(mid, segBearing) {
+					if month, ok := grid.earliestMonth(mid, segBearing); ok {
 						c0 := []float64{a[0], a[1]}
 						c1 := []float64{b[0], b[1]}
-						ft := streetFeat{}
+						ft := streetFeat{Month: month}
 						ft.Geometry.Coordinates = [][]float64{c0, c1}
-						chunkVis[segmentKey{si, j}] = struct{}{}
+						chunkVis[segmentKey{si, j}] = month
 						chunkFeats = append(chunkFeats, ft)
 					}
 				}
 			}
 			mu.Lock()
-			for v := range chunkVis {
-				visitedSegs[v] = struct{}{}
-			}
+			maps.Copy(visitedSegs, chunkVis)
 			feats = append(feats, chunkFeats...)
 			mu.Unlock()
 		})
 	}
 	wg.Wait()
-	return feats, visitedSegs
+	return feats, visitedSegs, months
 }
 
 func pointInNbd(pt point, nbdPolys [][][]float64) bool {
@@ -1460,8 +1529,11 @@ func ringsToPathString(rings [][][]float64) string {
 	return b.String()
 }
 
-func buildDrawCore(pathFeats []streetFeat, visitedSegs map[segmentKey]struct{}, st *nbdStats) *drawCorePayload {
-	out := &drawCorePayload{}
+func buildDrawCore(pathFeats []streetFeat, visitedSegs map[segmentKey]int, months []string, st *nbdStats) *drawCorePayload {
+	out := &drawCorePayload{
+		Paths:    map[string]string{},
+		Progress: drawProgress{ExploredKm: map[string]float64{}},
+	}
 	var streetPolys [][][]float64
 	for si, f := range streets {
 		coords := f.Geometry.Coordinates
@@ -1486,15 +1558,32 @@ func buildDrawCore(pathFeats []streetFeat, visitedSegs map[segmentKey]struct{}, 
 			streetPolys = append(streetPolys, run)
 		}
 	}
-	var pathPolys [][][]float64
+	pathPolysByMonth := make([][][][]float64, len(months))
 	for _, f := range pathFeats {
 		coords := f.Geometry.Coordinates
-		if len(coords) >= 2 {
-			pathPolys = append(pathPolys, coords)
+		if len(coords) >= 2 && f.Month < len(months) {
+			pathPolysByMonth[f.Month] = append(pathPolysByMonth[f.Month], coords)
 		}
 	}
 	out.Streets = polylinesToPathString(streetPolys)
-	out.Paths = polylinesToPathString(pathPolys)
+	var cumKm float64
+	for i, polys := range pathPolysByMonth {
+		if len(polys) == 0 {
+			continue
+		}
+		out.Paths[months[i]] = polylinesToPathString(polys)
+		if st != nil && i < len(st.MonthlyExplKm) {
+			cumKm += st.MonthlyExplKm[i]
+		}
+		out.Progress.ExploredKm[months[i]] = math.Round(cumKm*10) / 10
+	}
+	if st != nil {
+		var total float64
+		for _, row := range st.List {
+			total += row.Total
+		}
+		out.Progress.TotalKm = math.Round(total*10) / 10
+	}
 	out.Bounds = [4]float64{-122.516, 37.670159, -122.358, 37.844}
 	if len(nbds) > 0 {
 		var allRings [][][]float64
@@ -1582,13 +1671,11 @@ func buildDrawOverlay(st *nbdStats) *drawOverlayPayload {
 	return out
 }
 
-func computeNbdStats(visitedSegs map[segmentKey]struct{}) *nbdStats {
+func computeNbdStats(visitedSegs map[segmentKey]int, numMonths int) *nbdStats {
 	if len(nbds) == 0 {
 		return nil
 	}
-	if visitedSegs == nil {
-		visitedSegs = make(map[segmentKey]struct{})
-	}
+	monthlyExpl := make([]float64, numMonths)
 	type agg struct {
 		total, expl float64
 	}
@@ -1621,8 +1708,11 @@ func computeNbdStats(visitedSegs map[segmentKey]struct{}) *nbdStats {
 				}
 				lenKm := haversineM(a[0], a[1], b[0], b[1]) / 1000
 				byName[name].total += lenKm
-				if _, ok := visitedSegs[segmentKey{si, j}]; ok {
+				if month, ok := visitedSegs[segmentKey{si, j}]; ok {
 					byName[name].expl += lenKm
+					if month < numMonths {
+						monthlyExpl[month] += lenKm
+					}
 				}
 			}
 		}
@@ -1666,7 +1756,7 @@ func computeNbdStats(visitedSegs map[segmentKey]struct{}) *nbdStats {
 			"geometry":   map[string]any{"type": nb.Geom.Type, "coordinates": coords},
 		})
 	}
-	out := &nbdStats{List: rows, Geo: geo}
+	out := &nbdStats{List: rows, Geo: geo, MonthlyExplKm: monthlyExpl}
 	b, err := json.Marshal(map[string]any{"neighborhoods": rows, "features": geo})
 	if err != nil {
 		return nil

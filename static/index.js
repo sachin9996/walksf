@@ -13,14 +13,20 @@ const canvas = document.getElementById("map");
 const ctx = canvas.getContext("2d", { alpha: false });
 
 let streetPath2D = null;
-let pathPath2D = null;
 let nbdOutlinesPath2D = null;
 let nbds = [];
 let nbdFeats = [];
 let roadLabels = [];
 let hoverNbd = null;
 let photoList = [];
+let visiblePhotos = [];
 let hoverPhoto = null;
+
+let timelineMonths = [];
+let timelinePath2Ds = [];
+let timelineIndex = 0;
+let timelineProgress = null;
+let timelineDefaultStats = null;
 
 function isCoarsePointer() {
   return typeof window !== "undefined" && window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
@@ -891,44 +897,162 @@ function drawRoadLabels(w, h, hoverFeat) {
   ctx.restore();
 }
 
-function drawStreetsBatched(dimStreet, hoverFeat) {
-  if (!streetPath2D) return;
-  const styleFull = "rgba(255,255,255,0.35)";
-  const styleInside = "rgba(255,255,255,0.42)";
-  const styleDim = "rgba(255,255,255," + dimStreet + ")";
+function strokeLayers(layers, styleFull, styleInside, styleDim, hoverFeat) {
+  if (layers.length === 0) return;
   if (hoverNbd && hoverFeat && hoverFeat._path2d) {
     ctx.strokeStyle = styleDim;
-    ctx.stroke(streetPath2D);
+    for (const p of layers) ctx.stroke(p);
     ctx.save();
     ctx.clip(hoverFeat._path2d);
     ctx.strokeStyle = styleInside;
-    ctx.stroke(streetPath2D);
+    for (const p of layers) ctx.stroke(p);
     ctx.restore();
   } else {
     ctx.strokeStyle = styleFull;
-    ctx.stroke(streetPath2D);
+    for (const p of layers) ctx.stroke(p);
   }
+}
+
+function drawStreetsBatched(dimStreet, hoverFeat) {
+  // Segments first walked after the selected month still render as unexplored streets.
+  const layers = [streetPath2D, ...timelinePath2Ds.slice(timelineIndex + 1)].filter(Boolean);
+  strokeLayers(
+    layers,
+    "rgba(255,255,255,0.35)",
+    "rgba(255,255,255,0.42)",
+    "rgba(255,255,255," + dimStreet + ")",
+    hoverFeat,
+  );
 }
 
 function drawPathsBatched(dimPath, hoverFeat) {
   ctx.lineWidth = (1.5 / scale) * lineScale;
-  if (pathPath2D) {
-    const styleFull = "rgba(255,200,100,0.9)";
-    const styleInside = "rgba(255,200,100,0.98)";
-    const styleDim = "rgba(255,200,100," + dimPath + ")";
-    if (hoverNbd && hoverFeat && hoverFeat._path2d) {
-      ctx.strokeStyle = styleDim;
-      ctx.stroke(pathPath2D);
-      ctx.save();
-      ctx.clip(hoverFeat._path2d);
-      ctx.strokeStyle = styleInside;
-      ctx.stroke(pathPath2D);
-      ctx.restore();
-    } else {
-      ctx.strokeStyle = styleFull;
-      ctx.stroke(pathPath2D);
+  const layers = timelinePath2Ds.slice(0, timelineIndex + 1).filter(Boolean);
+  strokeLayers(
+    layers,
+    "rgba(255,200,100,0.9)",
+    "rgba(255,200,100,0.98)",
+    "rgba(255,200,100," + dimPath + ")",
+    hoverFeat,
+  );
+}
+
+function monthKey(year, month) {
+  return year + "-" + String(month).padStart(2, "0");
+}
+
+function monthsBetween(first, last) {
+  const out = [];
+  let [y, m] = first.split("-").map(Number);
+  const [ly, lm] = last.split("-").map(Number);
+  while (y < ly || (y === ly && m <= lm)) {
+    out.push(monthKey(y, m));
+    m++;
+    if (m > 12) {
+      m = 1;
+      y++;
     }
   }
+  return out;
+}
+
+function formatMonth(key) {
+  const [y, m] = key.split("-").map(Number);
+  return new Date(y, m - 1, 1).toLocaleString("en-US", { month: "short", year: "numeric" });
+}
+
+function setupTimeline(paths, progress) {
+  const keys = Object.keys(paths || {})
+    .filter((k) => /^\d{4}-\d{2}$/.test(k))
+    .sort();
+  if (keys.length === 0) {
+    timelineMonths = [];
+    timelinePath2Ds = [];
+    timelineIndex = 0;
+    return;
+  }
+  const now = new Date();
+  const nowKey = monthKey(now.getFullYear(), now.getMonth() + 1);
+  const lastKey = keys[keys.length - 1] > nowKey ? keys[keys.length - 1] : nowKey;
+  timelineMonths = monthsBetween(keys[0], lastKey);
+  timelinePath2Ds = timelineMonths.map((k) => (paths[k] ? new Path2D(paths[k]) : null));
+  timelineIndex = timelineMonths.length - 1;
+  timelineProgress = progress || null;
+
+  const completionEl = document.getElementById("completion");
+  const kmEl = document.querySelector("#footerStats .completion-km");
+  timelineDefaultStats = {
+    completion: completionEl ? completionEl.textContent : "",
+    km: kmEl ? kmEl.textContent : "",
+  };
+
+  const wrap = document.getElementById("timeline");
+  const slider = document.getElementById("timelineSlider");
+  if (!wrap || !slider || timelineMonths.length < 2) return;
+  slider.max = String(timelineMonths.length - 1);
+  slider.value = String(timelineIndex);
+  slider.addEventListener("input", () => {
+    setTimelineIndex(parseInt(slider.value, 10));
+  });
+  wrap.hidden = false;
+  updateTimelineUI();
+}
+
+function setTimelineIndex(i) {
+  if (!Number.isFinite(i)) return;
+  const next = Math.max(0, Math.min(timelineMonths.length - 1, i));
+  if (next === timelineIndex) return;
+  timelineIndex = next;
+  hidePhotoTooltip();
+  updateVisiblePhotos();
+  updateTimelineUI();
+  scheduleDraw();
+}
+
+function updateVisiblePhotos() {
+  const cutoff = timelineMonths[timelineIndex];
+  const isLatest = timelineIndex === timelineMonths.length - 1;
+  visiblePhotos = !cutoff || isLatest ? photoList : photoList.filter((p) => !p.month || p.month <= cutoff);
+}
+
+function exploredKmThrough(cutoff) {
+  const explored = (timelineProgress && timelineProgress.explored_km) || {};
+  let best = null;
+  for (const k of Object.keys(explored)) {
+    if (k <= cutoff && (best === null || k > best)) best = k;
+  }
+  return best === null ? 0 : explored[best];
+}
+
+function updateTimelineUI() {
+  const slider = document.getElementById("timelineSlider");
+  const label = document.getElementById("timelineLabel");
+  const cutoff = timelineMonths[timelineIndex];
+  if (!cutoff) return;
+  const monthText = formatMonth(cutoff);
+  if (label) label.textContent = monthText;
+  if (slider) {
+    const max = timelineMonths.length - 1;
+    slider.style.setProperty("--fill", (max > 0 ? (timelineIndex / max) * 100 : 100) + "%");
+    slider.setAttribute("aria-valuetext", monthText);
+  }
+
+  const completionEl = document.getElementById("completion");
+  const kmEl = document.querySelector("#footerStats .completion-km");
+  if (!completionEl || !kmEl || !timelineDefaultStats) return;
+  const total = timelineProgress && timelineProgress.total_km;
+  if (timelineIndex === timelineMonths.length - 1 || !total) {
+    completionEl.textContent = timelineDefaultStats.completion;
+    kmEl.textContent = timelineDefaultStats.km;
+    completionEl.style.removeProperty("--pct");
+    return;
+  }
+  const km = exploredKmThrough(cutoff);
+  const frac = Math.min(1, km / total);
+  const totalText = total.toFixed(1);
+  completionEl.textContent = (frac * 100).toFixed(2).padStart(5, "0") + "% complete";
+  kmEl.textContent = "(" + km.toFixed(1).padStart(totalText.length, "0") + "/" + totalText + " km)";
+  completionEl.style.setProperty("--pct", String(frac));
 }
 
 function drawNbdOutlines(hoverFeat) {
@@ -960,15 +1084,15 @@ function updatePhotoPins() {
   const layer = document.getElementById("photoPinsLayer");
   if (!layer) return;
   const { w, h } = getCanvasCssSize();
-  layer.setAttribute("aria-hidden", photoList.length ? "false" : "true");
-  while (layer.children.length > photoList.length) {
+  layer.setAttribute("aria-hidden", visiblePhotos.length ? "false" : "true");
+  while (layer.children.length > visiblePhotos.length) {
     layer.lastChild.remove();
   }
   const pinPx = photoPinSizePx(scale);
   const pinHalf = pinPx / 2;
   const pinImgSrc = "/static/images/photo-pin.svg";
-  for (let i = 0; i < photoList.length; i++) {
-    const p = photoList[i];
+  for (let i = 0; i < visiblePhotos.length; i++) {
+    const p = visiblePhotos[i];
     const { x, y } = projectCSS(p.lon, p.lat, w, h);
     const px = x - pinHalf;
     const py = y - pinPx;
@@ -987,7 +1111,7 @@ function updatePhotoPins() {
         e.preventDefault();
         e.stopPropagation();
         const idx = parseInt(pin.dataset.index, 10);
-        const photo = photoList[idx];
+        const photo = visiblePhotos[idx];
         if (!photo) return;
         if (isCoarsePointer()) {
           showPhotoTooltip(photo, pin);
@@ -998,7 +1122,7 @@ function updatePhotoPins() {
       pin.addEventListener("mouseenter", function () {
         if (isCoarsePointer()) return;
         const idx = parseInt(pin.dataset.index, 10);
-        const photo = photoList[idx];
+        const photo = visiblePhotos[idx];
         if (photo) showPhotoTooltip(photo, pin);
       });
       pin.addEventListener("mouseleave", function () {
@@ -1498,7 +1622,7 @@ async function init() {
     }
     const core = await coreRes.json();
     streetPath2D = core.streets ? new Path2D(core.streets) : null;
-    pathPath2D = core.paths ? new Path2D(core.paths) : null;
+    setupTimeline(core.paths, core.progress);
     bounds = core.bounds && core.bounds.length === 4 ? core.bounds : defaultBounds.slice();
     if (!validBounds(bounds)) {
       bounds = defaultBounds.slice();
@@ -1547,6 +1671,7 @@ async function init() {
       .then((data) => {
         if (data && Array.isArray(data.photos)) {
           photoList = data.photos;
+          updateVisiblePhotos();
           scheduleDraw();
         }
       })

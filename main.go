@@ -619,7 +619,7 @@ func (s *Server) registerStaticRoutes(staticDir string) {
 		w.Write(html)
 	})
 
-	handle(http.MethodGet, "/static/index.15e66cfaa60a.css", func(w http.ResponseWriter, r *http.Request) {
+	handle(http.MethodGet, "/static/index.8daff33115ba.css", func(w http.ResponseWriter, r *http.Request) {
 		b, err := os.ReadFile(filepath.Join(staticDir, "index.css"))
 		if err != nil {
 			http.NotFound(w, r)
@@ -638,7 +638,7 @@ func (s *Server) registerStaticRoutes(staticDir string) {
 		}
 	})
 
-	handle(http.MethodGet, "/static/index.2544e7c758f7.js", func(w http.ResponseWriter, r *http.Request) {
+	handle(http.MethodGet, "/static/index.30db4dc9ab6c.js", func(w http.ResponseWriter, r *http.Request) {
 		b, err := os.ReadFile(filepath.Join(staticDir, "index.js"))
 		if err != nil {
 			http.NotFound(w, r)

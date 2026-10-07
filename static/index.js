@@ -13,6 +13,10 @@ const canvas = document.getElementById("map");
 const ctx = canvas.getContext("2d", { alpha: false });
 
 let streetPath2D = null;
+let streetSrc = "";
+let timelineSrc = [];
+let elevField = null;
+let reliefImage = null;
 let nbdOutlinesPath2D = null;
 let nbds = [];
 let nbdFeats = [];
@@ -450,6 +454,405 @@ function bboxOfCoords(coords) {
   return [minLon, minLat, maxLon, maxLat];
 }
 
+// elev is the height grid in meters (tools/build_elev.py writes elev.webp, row 0 = north).
+// Relief is the hillshaded image drawn from that grid. It is rebuilt for the
+// two surrounding Pacific-time hours and lerped every five minutes. Street
+// vertices are shifted north by a fraction of their elevation once, then drawn
+// with the same canvas transform as the grid.
+const ELEV_URL = "/static/images/elev.webp";
+// Park, woods, and beach on the same grid, baked by tools/build_land.py.
+const LAND_URL = "/static/images/land.webp";
+const STREET_LIFT = 0.62;
+const RELIEF_Z = 2.2;
+const SUN_LON = -122.42;
+const SUN_LAT = 37.77;
+
+let elevLoaded = false;
+let landLoaded = false;
+let terrainStarted = false;
+let pendingLand = null;
+let landMask = null;
+
+function startTerrain() {
+  if (!elevLoaded || !landLoaded || terrainStarted) return;
+  terrainStarted = true;
+  scheduleSunTick();
+}
+
+function loadElev() {
+  const img = new Image();
+  img.decoding = "async";
+  img.onload = () => {
+    elevField = decodeElev(img);
+    if (pendingLand && pendingLand.length === elevField.cols * elevField.rows) landMask = pendingLand;
+    pendingLand = null;
+    rebuildStreetPaths();
+    elevLoaded = true;
+    startTerrain();
+  };
+  img.src = ELEV_URL;
+}
+
+function decodeLand(img) {
+  const c = document.createElement("canvas");
+  c.width = img.width;
+  c.height = img.height;
+  const g = c.getContext("2d", { willReadFrequently: true });
+  g.imageSmoothingEnabled = false;
+  g.drawImage(img, 0, 0);
+  const src = g.getImageData(0, 0, c.width, c.height).data;
+  const mask = new Uint8Array(c.width * c.height);
+  for (let i = 0; i < mask.length; i++) {
+    const v = src[i * 4];
+    mask[i] = v >= 224 ? 4 : v >= 160 ? 3 : v >= 96 ? 2 : v >= 32 ? 1 : 0;
+  }
+  return mask;
+}
+
+function loadLand() {
+  const img = new Image();
+  img.decoding = "async";
+  img.onload = () => {
+    const mask = decodeLand(img);
+    if (elevField && mask.length === elevField.cols * elevField.rows) landMask = mask;
+    else pendingLand = mask;
+    landLoaded = true;
+    startTerrain();
+  };
+  img.onerror = () => {
+    landLoaded = true;
+    startTerrain();
+  };
+  img.src = LAND_URL;
+}
+
+function decodeElev(img) {
+  const c = document.createElement("canvas");
+  c.width = img.width;
+  c.height = img.height;
+  const g = c.getContext("2d", { willReadFrequently: true });
+  g.drawImage(img, 0, 0);
+  const src = g.getImageData(0, 0, c.width, c.height).data;
+  const elev = new Float32Array(c.width * c.height);
+  for (let i = 0, p = 0; i < elev.length; i++, p += 4) {
+    elev[i] = src[p] * 256 + src[p + 1] + src[p + 2] / 256 - 32768;
+  }
+  return { elev, cols: c.width, rows: c.height };
+}
+
+function sampleElev(lon, lat) {
+  const { elev, cols, rows } = elevField;
+  const [minLon, minLat, maxLon, maxLat] = defaultBounds;
+  const u = ((lon - minLon) / (maxLon - minLon)) * (cols - 1);
+  const v = ((maxLat - lat) / (maxLat - minLat)) * (rows - 1);
+  if (u < 0 || v < 0 || u > cols - 1 || v > rows - 1) return 0;
+  const x0 = Math.floor(u);
+  const y0 = Math.floor(v);
+  const x1 = Math.min(cols - 1, x0 + 1);
+  const y1 = Math.min(rows - 1, y0 + 1);
+  const tx = u - x0;
+  const ty = v - y0;
+  const i00 = y0 * cols + x0;
+  const i01 = y0 * cols + x1;
+  const i10 = y1 * cols + x0;
+  const i11 = y1 * cols + x1;
+  return (elev[i00] * (1 - tx) + elev[i01] * tx) * (1 - ty) + (elev[i10] * (1 - tx) + elev[i11] * tx) * ty;
+}
+
+function liftLat(lon, lat) {
+  const e = sampleElev(lon, lat);
+  if (e <= 1) return lat;
+  return lat + (e / 111320) * STREET_LIFT;
+}
+
+function distortPath(d) {
+  if (!d || !elevField) return d;
+  const parts = [];
+  let i = 0;
+  const n = d.length;
+  let x = 0;
+  let y = 0;
+  let lx = 0;
+  let ly = 0;
+  const readNum = () => {
+    while (i < n && d.charCodeAt(i) === 32) i++;
+    const start = i;
+    const c = d.charCodeAt(i);
+    if (c === 43 || c === 45) i++;
+    while (i < n) {
+      const k = d.charCodeAt(i);
+      if ((k >= 48 && k <= 57) || k === 46) i++;
+      else break;
+    }
+    return parseFloat(d.slice(start, i));
+  };
+  while (i < n) {
+    const c = d[i];
+    if (c === "M" || c === "l") {
+      i++;
+      const a = readNum();
+      const b = readNum();
+      const px = c === "l" ? x + a : a;
+      const py = c === "l" ? y + b : b;
+      x = px;
+      y = py;
+      const ny = liftLat(x, y);
+      if (c === "M") {
+        parts.push("M" + x.toFixed(6) + " " + ny.toFixed(6));
+        lx = x;
+        ly = ny;
+      } else {
+        parts.push("l" + (x - lx).toFixed(6) + " " + (ny - ly).toFixed(6));
+        lx = x;
+        ly = ny;
+      }
+    } else {
+      i++;
+    }
+  }
+  return parts.join("");
+}
+
+function rebuildStreetPaths() {
+  const lift = elevField != null;
+  streetPath2D = streetSrc ? new Path2D(lift ? distortPath(streetSrc) : streetSrc) : null;
+  timelinePath2Ds = timelineSrc.map((s) => (s ? new Path2D(lift ? distortPath(s) : s) : null));
+  scheduleDraw();
+}
+
+function pacificParts(date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).formatToParts(date);
+  const get = (type) => {
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i].type === type) return Number(parts[i].value);
+    }
+    return 0;
+  };
+  return { year: get("year"), month: get("month"), day: get("day"), hour: get("hour"), minute: get("minute") };
+}
+
+function pacificOffsetMinutes(date) {
+  const p = pacificParts(date);
+  const asUTC = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, date.getUTCSeconds());
+  return Math.round((asUTC - date.getTime()) / 60000);
+}
+
+function dateFromPacific(y, mo, d, h, mi) {
+  let utc = Date.UTC(y, mo - 1, d, h + 8, mi);
+  for (let i = 0; i < 3; i++) {
+    const off = pacificOffsetMinutes(new Date(utc));
+    const laAsUtc = utc + off * 60000;
+    const want = Date.UTC(y, mo - 1, d, h, mi);
+    utc += want - laAsUtc;
+  }
+  return new Date(utc);
+}
+
+function dayOfYear(y, mo, d) {
+  return Math.floor((Date.UTC(y, mo - 1, d) - Date.UTC(y, 0, 1)) / 86400000) + 1;
+}
+
+function sunPosition(date) {
+  const utcHours =
+    date.getUTCHours() + date.getUTCMinutes() / 60 + date.getUTCSeconds() / 3600 + date.getUTCMilliseconds() / 3600000;
+  let solar = utcHours + SUN_LON / 15;
+  let hourAngle = solar - 12;
+  while (hourAngle > 12) hourAngle -= 24;
+  while (hourAngle < -12) hourAngle += 24;
+  const p = pacificParts(date);
+  const n = dayOfYear(p.year, p.month, p.day);
+  const decl = (23.44 * Math.sin((2 * Math.PI * (n - 81)) / 365) * Math.PI) / 180;
+  const lat = (SUN_LAT * Math.PI) / 180;
+  const H = (hourAngle * 15 * Math.PI) / 180;
+  const sinAlt = Math.sin(lat) * Math.sin(decl) + Math.cos(lat) * Math.cos(decl) * Math.cos(H);
+  const alt = (Math.asin(Math.max(-1, Math.min(1, sinAlt))) * 180) / Math.PI;
+  const denom = Math.cos((alt * Math.PI) / 180) * Math.cos(lat);
+  const cosAz =
+    (Math.sin(decl) - Math.sin((alt * Math.PI) / 180) * Math.sin(lat)) / (Math.abs(denom) < 1e-6 ? 1e-6 : denom);
+  let az = (Math.acos(Math.max(-1, Math.min(1, cosAz))) * 180) / Math.PI;
+  if (Math.sin(H) > 0) az = 360 - az;
+  return { alt, az };
+}
+
+const reliefHourCache = new Map();
+
+const LAND_CITY = [124, 136, 142];
+const LAND_PARK = [109, 154, 98];
+const LAND_WOODS = [62, 107, 72];
+const LAND_BEACH = [196, 180, 150];
+const LAND_WATER = [11, 30, 45];
+const SHADOW = 1.3;
+
+function shadeRelief(altDeg, azDeg) {
+  const { elev, cols, rows } = elevField;
+  const [minLon, minLat, maxLon, maxLat] = defaultBounds;
+  const latMid = ((minLat + maxLat) / 2) * (Math.PI / 180);
+  const cellX = ((maxLon - minLon) / (cols - 1)) * 111320 * Math.cos(latMid);
+  const cellY = ((maxLat - minLat) / (rows - 1)) * 111320;
+  const lightAlt = altDeg > 0 ? Math.min(altDeg, 40) : 8;
+  const zenith = ((90 - lightAlt) * Math.PI) / 180;
+  const azimuth = ((360 - azDeg + 90) * Math.PI) / 180;
+  const cosZ = Math.cos(zenith);
+  const sinZ = Math.sin(zenith);
+  let day = (altDeg + 8) / 20;
+  if (day < 0) day = 0;
+  else if (day > 1) day = 1;
+  const lit = 0.75 + 0.25 * day;
+  const warm = altDeg > 0 && altDeg < 16 ? (16 - altDeg) / 16 : 0;
+  const canvas = document.createElement("canvas");
+  canvas.width = cols;
+  canvas.height = rows;
+  const g = canvas.getContext("2d");
+  const img = g.createImageData(cols, rows);
+  const data = img.data;
+  const zEx = RELIEF_Z;
+  for (let y = 0; y < rows; y++) {
+    const y0 = y === 0 ? 0 : y - 1;
+    const y2 = y === rows - 1 ? rows - 1 : y + 1;
+    const row0 = y0 * cols;
+    const row = y * cols;
+    const row2 = y2 * cols;
+    for (let x = 0; x < cols; x++) {
+      const x0 = x === 0 ? 0 : x - 1;
+      const x2 = x === cols - 1 ? cols - 1 : x + 1;
+      const z1 = elev[row0 + x0] * zEx;
+      const z2v = elev[row0 + x] * zEx;
+      const z3 = elev[row0 + x2] * zEx;
+      const z4 = elev[row + x0] * zEx;
+      const z6 = elev[row + x2] * zEx;
+      const z7 = elev[row2 + x0] * zEx;
+      const z8 = elev[row2 + x] * zEx;
+      const z9 = elev[row2 + x2] * zEx;
+      const dx = (z3 + 2 * z6 + z9 - (z1 + 2 * z4 + z7)) / (8 * cellX);
+      const dy = (z7 + 2 * z8 + z9 - (z1 + 2 * z2v + z3)) / (8 * cellY);
+      const slope = Math.atan(Math.hypot(dx, dy));
+      const aspect = Math.atan2(dy, -dx);
+      let hs = cosZ * Math.cos(slope) + sinZ * Math.sin(slope) * Math.cos(azimuth - aspect);
+      if (hs < 0) hs = 0;
+      else if (hs > 1) hs = 1;
+      if (day < 1) {
+        const form = 0.42 + 0.58 * hs;
+        hs = form * (1 - day) + hs * day;
+      }
+      const steep = Math.min(1, Math.hypot(dx, dy) / 1.6);
+      const e = elev[row + x];
+      const kind = landMask ? landMask[row + x] : 0;
+      const p = (row + x) * 4;
+      if (kind === 4) {
+        data[p] = LAND_WATER[0];
+        data[p + 1] = LAND_WATER[1];
+        data[p + 2] = LAND_WATER[2];
+        data[p + 3] = 255;
+        continue;
+      }
+      const col = kind === 1 ? LAND_PARK : kind === 2 ? LAND_WOODS : kind === 3 ? LAND_BEACH : LAND_CITY;
+      const sk = SHADOW;
+      let h = 1 - (1 - hs) * sk;
+      if (h < 0) h = 0;
+      else if (h > 1) h = 1;
+      let gain = (0.42 + 0.58 * h) * (1 - Math.min(0.55, 0.22 * sk) * steep);
+      let r = col[0] * gain;
+      let gv = col[1] * gain;
+      let b = col[2] * gain;
+      r = r * lit + 30 * warm * day;
+      gv = gv * lit + 10 * warm * day;
+      b = b * lit;
+      let a = (e - 0.3) / 1.6;
+      if (a < 0) a = 0;
+      else if (a > 1) a = 1;
+      data[p] = r;
+      data[p + 1] = gv;
+      data[p + 2] = b;
+      data[p + 3] = a * 255;
+    }
+  }
+  g.putImageData(img, 0, 0);
+  return canvas;
+}
+
+function reliefForHour(doy, hour, when) {
+  const key = doy + "-" + hour;
+  const hit = reliefHourCache.get(key);
+  if (hit) return hit;
+  const canvas = shadeRelief(when.alt, when.az);
+  reliefHourCache.set(key, canvas);
+  if (reliefHourCache.size > 3) {
+    for (const k of reliefHourCache.keys()) {
+      if (k !== key) {
+        reliefHourCache.delete(k);
+        break;
+      }
+    }
+  }
+  return canvas;
+}
+
+function composeRelief(imgA, imgB, t) {
+  const w = imgA.width;
+  const h = imgA.height;
+  if (!reliefImage) {
+    reliefImage = document.createElement("canvas");
+    reliefImage.width = w;
+    reliefImage.height = h;
+  }
+  const g = reliefImage.getContext("2d");
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.clearRect(0, 0, w, h);
+  // The map transform flips Y, so row 0 of this canvas is drawn in the south.
+  g.setTransform(1, 0, 0, -1, 0, h);
+  // A is drawn opaque so B blends over it. Drawing both with partial alpha
+  // onto a cleared canvas lets the page background through and flashes at :00.
+  g.globalAlpha = 1;
+  g.drawImage(imgA, 0, 0);
+  g.globalAlpha = t;
+  g.drawImage(imgB, 0, 0);
+  g.globalAlpha = 1;
+}
+
+function updateSunRelief() {
+  if (!elevField) return;
+  const now = new Date();
+  const p = pacificParts(now);
+  const slot = Math.floor(p.minute / 5) * 5;
+  const t = slot / 60;
+  const doy = dayOfYear(p.year, p.month, p.day);
+  const h0 = p.hour;
+  const h1 = (p.hour + 1) % 24;
+  const t0 = dateFromPacific(p.year, p.month, p.day, h0, 0);
+  let t1 = dateFromPacific(p.year, p.month, p.day, h1, 0);
+  if (h1 === 0) t1 = new Date(t1.getTime() + 86400000);
+  const a = reliefForHour(doy, h0, sunPosition(t0));
+  const b = reliefForHour(doy + (h1 === 0 ? 1 : 0), h1, sunPosition(t1));
+  composeRelief(a, b, t);
+  scheduleDraw();
+}
+
+function scheduleSunTick() {
+  updateSunRelief();
+  const step = 5 * 60 * 1000;
+  const wait = step - (Date.now() % step) + 30;
+  window.setTimeout(scheduleSunTick, wait);
+}
+
+function drawRelief() {
+  if (!reliefImage || !nbdOutlinesPath2D) return;
+  const [minLon, minLat, maxLon, maxLat] = defaultBounds;
+  ctx.save();
+  ctx.clip(nbdOutlinesPath2D);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(reliefImage, minLon, minLat, maxLon - minLon, maxLat - minLat);
+  ctx.restore();
+}
+
 function path2DFromPolys(polys) {
   const p = new Path2D();
   for (const poly of polys || []) {
@@ -491,12 +894,10 @@ function draw() {
     return;
   }
   const { w, h } = getCanvasCssSize();
-  const dimStreet = 0.06;
-  const dimPath = 0.1;
 
   ctx.save();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.fillStyle = "#0a1628";
+  ctx.fillStyle = "#0b1e2d";
   ctx.fillRect(0, 0, w, h);
   ctx.restore();
   const cx = w / 2,
@@ -535,6 +936,8 @@ function draw() {
   );
   ctx.clip();
 
+  drawRelief();
+
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   lineScale =
@@ -548,11 +951,11 @@ function draw() {
     ? nbdFeats.find((x) => (x.name || (x.properties && x.properties.name)) === hoverNbd)
     : null;
 
-  drawStreetsBatched(dimStreet, hoverFeat);
-  drawPathsBatched(dimPath, hoverFeat);
-  drawNbdOutlines(hoverFeat);
+  drawStreetsBatched();
+  drawPathsBatched();
+  drawNbdOutlines();
   drawNbdHoverOutline(hoverFeat);
-  drawRoadLabels(w, h, hoverFeat);
+  drawRoadLabels(w, h);
 
   ctx.restore();
   updateRuler(w, h);
@@ -714,7 +1117,7 @@ function updateRuler(w, h) {
   }
 }
 
-function drawRoadLabels(w, h, hoverFeat) {
+function drawRoadLabels(w, h) {
   if (scale < LABEL_MIN_SCALE || roadLabels.length === 0) return;
   if (roadLabelClashScale !== scale) {
     roadLabelClashScale = scale;
@@ -777,14 +1180,7 @@ function drawRoadLabels(w, h, hoverFeat) {
     toDraw.push(list[0]);
   });
 
-  // Hover: dim labels outside hovered nbd. Use JS point-in-polygon so winding is correct.
-  const dim = hoverFeat && hoverFeat._polys && hoverFeat._polys.length > 0;
-  for (let i = 0; i < toDraw.length; i++) {
-    const v = toDraw[i];
-    v.inside = dim && pointInPolys(hoverFeat._polys, v.lab.midLon, v.lab.midLat);
-  }
-
-  // Draw in screen space: darker palette, rotated to road angle (upright when possible)
+  // Draw in screen space, rotated to the road angle and kept upright.
   ctx.save();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.font = "11px sans-serif";
@@ -809,7 +1205,7 @@ function drawRoadLabels(w, h, hoverFeat) {
     const cosB = Math.cos(roadBearing);
     const sinB = Math.sin(roadBearing);
     const baseCx = lab.midLon * scale + tx;
-    const baseCy = ty - lab.midLat * scale;
+    const baseCy = ty - liftLat(lab.midLon, lab.midLat) * scale;
 
     function bboxAt(sx, sy) {
       return {
@@ -879,9 +1275,8 @@ function drawRoadLabels(w, h, hoverFeat) {
   for (let i = 0; i < toDraw.length; i++) {
     const v = toDraw[i];
     const lab = v.lab;
-    const bright = !dim || v.inside;
-    ctx.fillStyle = bright ? "rgba(160,170,185,0.72)" : "rgba(100,110,125,0.38)";
-    ctx.strokeStyle = bright ? "rgba(8,14,22,0.88)" : "rgba(8,14,22,0.45)";
+    ctx.fillStyle = "rgba(160,170,185,0.72)";
+    ctx.strokeStyle = "rgba(8,14,22,0.88)";
     const roadAngle = lab.angle != null ? lab.angle : 0;
     const mapAngle = angle;
     let labelAngle = mapAngle + roadAngle;
@@ -897,44 +1292,22 @@ function drawRoadLabels(w, h, hoverFeat) {
   ctx.restore();
 }
 
-function strokeLayers(layers, styleFull, styleInside, styleDim, hoverFeat) {
+function strokeLayers(layers, style) {
   if (layers.length === 0) return;
-  if (hoverNbd && hoverFeat && hoverFeat._path2d) {
-    ctx.strokeStyle = styleDim;
-    for (const p of layers) ctx.stroke(p);
-    ctx.save();
-    ctx.clip(hoverFeat._path2d);
-    ctx.strokeStyle = styleInside;
-    for (const p of layers) ctx.stroke(p);
-    ctx.restore();
-  } else {
-    ctx.strokeStyle = styleFull;
-    for (const p of layers) ctx.stroke(p);
-  }
+  ctx.strokeStyle = style;
+  for (const p of layers) ctx.stroke(p);
 }
 
-function drawStreetsBatched(dimStreet, hoverFeat) {
+function drawStreetsBatched() {
   // Segments first walked after the selected month still render as unexplored streets.
   const layers = [streetPath2D, ...timelinePath2Ds.slice(timelineIndex + 1)].filter(Boolean);
-  strokeLayers(
-    layers,
-    "rgba(255,255,255,0.35)",
-    "rgba(255,255,255,0.42)",
-    "rgba(255,255,255," + dimStreet + ")",
-    hoverFeat,
-  );
+  strokeLayers(layers, "rgba(42,36,28,0.72)");
 }
 
-function drawPathsBatched(dimPath, hoverFeat) {
-  ctx.lineWidth = (1.5 / scale) * lineScale;
+function drawPathsBatched() {
+  ctx.lineWidth = (1 / scale) * lineScale;
   const layers = timelinePath2Ds.slice(0, timelineIndex + 1).filter(Boolean);
-  strokeLayers(
-    layers,
-    "rgba(255,200,100,0.9)",
-    "rgba(255,200,100,0.98)",
-    "rgba(255,200,100," + dimPath + ")",
-    hoverFeat,
-  );
+  strokeLayers(layers, "rgba(255,200,100,0.9)");
 }
 
 function monthKey(year, month) {
@@ -967,16 +1340,19 @@ function setupTimeline(paths, progress) {
     .sort();
   if (keys.length === 0) {
     timelineMonths = [];
+    timelineSrc = [];
     timelinePath2Ds = [];
     timelineIndex = 0;
+    rebuildStreetPaths();
     return;
   }
   const now = new Date();
   const nowKey = monthKey(now.getFullYear(), now.getMonth() + 1);
   const lastKey = keys[keys.length - 1] > nowKey ? keys[keys.length - 1] : nowKey;
   timelineMonths = monthsBetween(keys[0], lastKey);
-  timelinePath2Ds = timelineMonths.map((k) => (paths[k] ? new Path2D(paths[k]) : null));
+  timelineSrc = timelineMonths.map((k) => (paths[k] ? paths[k] : ""));
   timelineIndex = timelineMonths.length - 1;
+  rebuildStreetPaths();
   timelineProgress = progress || null;
 
   const completionEl = document.getElementById("completion");
@@ -1055,11 +1431,11 @@ function updateTimelineUI() {
   completionEl.style.setProperty("--pct", String(frac));
 }
 
-function drawNbdOutlines(hoverFeat) {
+function drawNbdOutlines() {
   if (!nbdOutlinesPath2D) {
     return;
   }
-  ctx.strokeStyle = hoverNbd && hoverFeat ? "rgba(255,255,255,0.25)" : "rgba(255,255,255,0.5)";
+  ctx.strokeStyle = "rgba(255,255,255,0.5)";
   ctx.lineWidth = (1.5 / scale) * lineScale;
   ctx.stroke(nbdOutlinesPath2D);
 }
@@ -1609,6 +1985,8 @@ async function init() {
 
   window.addEventListener("resize", resize);
   window.visualViewport?.addEventListener("resize", resize);
+  loadElev();
+  loadLand();
 
   try {
     const coreRes = await fetch("/api/draw");
@@ -1621,7 +1999,7 @@ async function init() {
       return;
     }
     const core = await coreRes.json();
-    streetPath2D = core.streets ? new Path2D(core.streets) : null;
+    streetSrc = core.streets || "";
     setupTimeline(core.paths, core.progress);
     bounds = core.bounds && core.bounds.length === 4 ? core.bounds : defaultBounds.slice();
     if (!validBounds(bounds)) {

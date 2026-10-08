@@ -5,8 +5,11 @@ Edges of the city, parks, woods, beach, and lakes. Freeways are drawn
 on top, including the span from the mainland to Yerba Buena Island.
 Characters are ASCII. No hillshade.
 """
+import hashlib
+import io
 import json
 import math
+import re
 from pathlib import Path
 
 import numpy as np
@@ -251,8 +254,31 @@ def main():
     ty = (OG_H - title_h) / 2 - title_bb[1]
     draw_crisp(img, tx, ty, title, title_font, TITLE)
 
-    out = ROOT / "static" / "images" / "preview.png"
-    img.convert("RGB").save(out, "PNG")
+    # Platforms cache og:image by URL, and many ignore a query string.
+    # A new content hash in the filename is a new URL.
+    raw = img.convert("RGB")
+    buf = io.BytesIO()
+    raw.save(buf, "PNG")
+    png = buf.getvalue()
+    name = "preview." + hashlib.sha256(png).hexdigest()[:12] + ".png"
+    images = ROOT / "static" / "images"
+    for old in images.glob("preview*.png"):
+        if old.name != name:
+            old.unlink()
+    out = images / name
+    out.write_bytes(png)
+
+    html_path = ROOT / "static" / "index.html"
+    html = html_path.read_text()
+    updated = re.sub(
+        r"static/images/preview(?:\.[0-9a-f]{12})?\.png",
+        "static/images/" + name,
+        html,
+    )
+    if name not in updated:
+        raise SystemExit("og:image urls in static/index.html were not updated")
+    if updated != html:
+        html_path.write_text(updated)
     print(f"wrote {out} ({OG_W}x{OG_H}, {cols}x{rows} chars, {char_w}x{char_h}px)")
 
 

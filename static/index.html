@@ -17,16 +17,15 @@
   <meta name="twitter:image" content="https://walksf.quest/static/images/preview.a846793b9142.png">
   <title>Walk SF</title>
   <link rel="icon" href="/static/images/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/index.8daff33115ba.css">
+  <link rel="stylesheet" href="/static/index.e4bd6eadc26b.css">
+  <noscript>
+    <link rel="stylesheet" href="/static/noscript.020371e2a155.css">
+  </noscript>
 </head>
 
 <body>
   <noscript>
-    <div class="noscript-fallback">
-      <p class="noscript-fallback-title">JavaScript required</p>
-      <p class="noscript-fallback-detail">This page is an interactive map.
-      </p>
-    </div>
+    <img class="noscript-map" src="/noscript-map.svg" alt="Map of San Francisco streets walked">
   </noscript>
   <div id="mapWrap">
     <canvas id="map" tabindex="0" aria-label="Map of San Francisco streets"></canvas>
@@ -74,6 +73,27 @@
     </div>
     <div id="updated">__LAST_UPDATED_TIMESTAMP__</div>
   </div>
+  <noscript>
+    <div class="noscript-footer">
+      <div class="noscript-track" aria-hidden="true">
+        <div class="noscript-walker">
+          <div class="noscript-step noscript-step-l noscript-trail-0">
+            <span class="noscript-print"></span>
+          </div>
+          <div class="noscript-step noscript-step-r noscript-trail-1">
+            <span class="noscript-print"></span>
+          </div>
+          <div class="noscript-step noscript-step-l noscript-trail-2">
+            <span class="noscript-print"></span>
+          </div>
+          <div class="noscript-step noscript-step-r noscript-trail-3">
+            <span class="noscript-print"></span>
+          </div>
+        </div>
+      </div>
+      <p class="noscript-note"><span class="noscript-js">JavaScript</span> required for interactivity.</p>
+    </div>
+  </noscript>
   <div id="ruler" class="ruler-hidden" aria-hidden="true">
     <div id="rulerLat" class="ruler-axis ruler-lat">
       <div class="ruler-line"></div>

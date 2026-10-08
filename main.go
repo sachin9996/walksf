@@ -175,6 +175,7 @@ type Server struct {
 	streetsBody     []byte
 	drawCoreBody    atomic.Pointer[[]byte]
 	drawOverlayBody atomic.Pointer[[]byte]
+	noscriptSVG     atomic.Pointer[[]byte]
 
 	explKm  atomic.Pointer[string]
 	totalKm atomic.Pointer[string]
@@ -205,6 +206,8 @@ func (s *Server) storeDrawPayload(pathFeats []streetFeat, visitedSegs map[segmen
 	if err == nil {
 		s.drawOverlayBody.Store(&overlayBody)
 	}
+	svg := buildNoscriptSVG(core)
+	s.noscriptSVG.Store(&svg)
 }
 
 func excludedStreetLayer(layer string) bool {
@@ -619,7 +622,43 @@ func (s *Server) registerStaticRoutes(staticDir string) {
 		w.Write(html)
 	})
 
-	handle(http.MethodGet, "/static/index.8daff33115ba.css", func(w http.ResponseWriter, r *http.Request) {
+	handle(http.MethodGet, "/noscript-map.svg", func(w http.ResponseWriter, r *http.Request) {
+		b := s.noscriptSVG.Load()
+		if b == nil || len(*b) == 0 {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "image/svg+xml; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			w.Header().Set("Content-Encoding", "gzip")
+			gz := gzip.NewWriter(w)
+			gz.Write(*b)
+			gz.Close()
+		} else {
+			w.Write(*b)
+		}
+	})
+
+	handle(http.MethodGet, "/static/noscript.020371e2a155.css", func(w http.ResponseWriter, r *http.Request) {
+		b, err := os.ReadFile(filepath.Join(staticDir, "noscript.css"))
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			w.Header().Set("Content-Encoding", "gzip")
+			gz := gzip.NewWriter(w)
+			gz.Write(b)
+			gz.Close()
+		} else {
+			w.Write(b)
+		}
+	})
+
+	handle(http.MethodGet, "/static/index.e4bd6eadc26b.css", func(w http.ResponseWriter, r *http.Request) {
 		b, err := os.ReadFile(filepath.Join(staticDir, "index.css"))
 		if err != nil {
 			http.NotFound(w, r)
@@ -1606,6 +1645,61 @@ func buildDrawCore(pathFeats []streetFeat, visitedSegs map[segmentKey]int, month
 		}
 	}
 	return out
+}
+
+func buildNoscriptSVG(core *drawCorePayload) []byte {
+	minLon, minLat, maxLon, maxLat := -122.516, 37.670159, -122.358, 37.844
+	if core != nil && core.Bounds[2] > core.Bounds[0] && core.Bounds[3] > core.Bounds[1] {
+		minLon, minLat, maxLon, maxLat = core.Bounds[0], core.Bounds[1], core.Bounds[2], core.Bounds[3]
+	}
+	spanX := maxLon - minLon
+	spanY := maxLat - minLat
+	pad := 0.045 * math.Max(spanX, spanY)
+	vbX, vbY := -pad, -pad
+	vbW, vbH := spanX+2*pad, spanY+2*pad
+
+	var walked strings.Builder
+	if core != nil {
+		for _, p := range core.Paths {
+			walked.WriteString(p)
+		}
+	}
+	outlines, streets := "", ""
+	if core != nil {
+		outlines = core.Neighborhoods.Outlines
+		streets = core.Streets
+	}
+
+	var b strings.Builder
+	b.Grow(len(outlines)*2 + len(streets) + walked.Len() + 640)
+	fmt.Fprintf(&b, `<svg xmlns="http://www.w3.org/2000/svg" viewBox="%g %g %g %g" width="800" height="%g">`,
+		vbX, vbY, vbW, vbH, 800*vbH/vbW)
+	b.WriteString(`<title>Streets walked in San Francisco</title>`)
+	fmt.Fprintf(&b, `<rect x="%g" y="%g" width="%g" height="%g" fill="#0b1e2d"/>`, vbX, vbY, vbW, vbH)
+	fmt.Fprintf(&b, `<g transform="translate(%g %g) scale(1 -1)">`, -minLon, maxLat)
+	if outlines != "" {
+		b.WriteString(`<path fill="#5c6b73" fill-rule="evenodd" d="`)
+		b.WriteString(outlines)
+		b.WriteString(`"/>`)
+	}
+	const streetStroke = 0.00016
+	if streets != "" {
+		fmt.Fprintf(&b, `<path fill="none" stroke="#2a241c" stroke-opacity="0.72" stroke-width="%.5f" stroke-linecap="round" stroke-linejoin="round" d="`, streetStroke)
+		b.WriteString(streets)
+		b.WriteString(`"/>`)
+	}
+	if walked.Len() > 0 {
+		fmt.Fprintf(&b, `<path fill="none" stroke="#ffc864" stroke-opacity="0.9" stroke-width="%.5f" stroke-linecap="round" stroke-linejoin="round" d="`, streetStroke)
+		b.WriteString(walked.String())
+		b.WriteString(`"/>`)
+	}
+	if outlines != "" {
+		fmt.Fprintf(&b, `<path fill="none" stroke="#ffffff" stroke-opacity="0.45" stroke-width="%.5f" stroke-linejoin="round" d="`, streetStroke*1.5)
+		b.WriteString(outlines)
+		b.WriteString(`"/>`)
+	}
+	b.WriteString(`</g></svg>`)
+	return []byte(b.String())
 }
 
 func toTitleCase(s string) string {

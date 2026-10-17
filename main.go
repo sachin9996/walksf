@@ -116,7 +116,7 @@ type drawCorePayload struct {
 	Paths         map[string]string `json:"paths"`
 	Progress      drawProgress      `json:"progress"`
 	Bounds        [4]float64        `json:"bounds"`
-	Neighborhoods drawCoreNbdBlock  `json:"neighborhoods,omitempty"`
+	Neighborhoods drawCoreNbdBlock  `json:"neighborhoods"`
 }
 
 type drawProgress struct {

@@ -677,7 +677,7 @@ func (s *Server) registerStaticRoutes(staticDir string) {
 		}
 	})
 
-	handle(http.MethodGet, "/static/index.30db4dc9ab6c.js", func(w http.ResponseWriter, r *http.Request) {
+	handle(http.MethodGet, "/static/index.0f88ccb21629.js", func(w http.ResponseWriter, r *http.Request) {
 		b, err := os.ReadFile(filepath.Join(staticDir, "index.js"))
 		if err != nil {
 			http.NotFound(w, r)

@@ -342,33 +342,10 @@ function unproject(canvasX, canvasY, w, h) {
   return { lon: (x - tx) / scale, lat: (ty - y) / scale };
 }
 
-function project(lon, lat) {
-  return { x: (lon * scale + tx) * dpr, y: (ty - lat * scale) * dpr };
-}
-
 function projectCSS(lon, lat, w, h) {
   const contentX = lon * scale + tx;
   const contentY = ty - lat * scale;
   return contentToCanvas(contentX, contentY, w, h);
-}
-
-function pointInPolygon(lon, lat, geom) {
-  if (!geom || !geom.coordinates) {
-    return false;
-  }
-  const c = geom.coordinates;
-  if (geom.type === "Polygon" && c[0]) {
-    return pointInPoly(lon, lat, c[0]);
-  }
-  if (geom.type === "MultiPolygon") {
-    for (let i = 0; i < c.length; i++) {
-      if (c[i] && c[i][0] && pointInPoly(lon, lat, c[i][0])) {
-        return true;
-      }
-    }
-    return false;
-  }
-  return false;
 }
 
 function nbdAt(lon, lat) {
@@ -380,26 +357,6 @@ function nbdAt(lon, lat) {
     }
   }
   return null;
-}
-
-function getPolys(geom) {
-  if (!geom || !geom.coordinates) {
-    return [];
-  }
-  const c = geom.coordinates;
-  if (geom.type === "Polygon" && c[0]) {
-    return [c[0]];
-  }
-  if (geom.type === "MultiPolygon") {
-    const polys = [];
-    for (let i = 0; i < c.length; i++) {
-      if (c[i] && c[i][0]) {
-        polys.push(c[i][0]);
-      }
-    }
-    return polys;
-  }
-  return [];
 }
 
 function pointInPoly(lon, lat, poly) {
@@ -426,32 +383,6 @@ function pointInPolys(polys, lon, lat) {
     if (pointInPoly(lon, lat, polys[i])) return true;
   }
   return false;
-}
-
-function bboxOfCoords(coords) {
-  if (!coords || coords.length === 0) {
-    return null;
-  }
-  let minLon = coords[0][0],
-    maxLon = coords[0][0],
-    minLat = coords[0][1],
-    maxLat = coords[0][1];
-  for (let i = 1; i < coords.length; i++) {
-    const c = coords[i];
-    if (c[0] < minLon) {
-      minLon = c[0];
-    }
-    if (c[0] > maxLon) {
-      maxLon = c[0];
-    }
-    if (c[1] < minLat) {
-      minLat = c[1];
-    }
-    if (c[1] > maxLat) {
-      maxLat = c[1];
-    }
-  }
-  return [minLon, minLat, maxLon, maxLat];
 }
 
 // elev is the height grid in meters (tools/build_elev.py writes elev.webp, row 0 = north).
@@ -684,12 +615,26 @@ function sunPosition(date) {
 
 const reliefHourCache = new Map();
 
-const LAND_CITY = [124, 136, 142];
-const LAND_PARK = [109, 154, 98];
-const LAND_WOODS = [62, 107, 72];
-const LAND_BEACH = [196, 180, 150];
-const LAND_WATER = [11, 30, 45];
+const LAND_COLOR = [
+  [124, 136, 142],
+  [109, 154, 98],
+  [62, 107, 72],
+  [196, 180, 150],
+  [11, 30, 45],
+];
 const SHADOW = 1.3;
+
+function clamp01(v) {
+  if (v < 0) return 0;
+  if (v > 1) return 1;
+  return v;
+}
+
+function paintSouthUp(canvas, draw) {
+  const g = canvas.getContext("2d");
+  g.setTransform(1, 0, 0, -1, 0, canvas.height);
+  draw(g);
+}
 
 function shadeRelief(altDeg, azDeg) {
   const { elev, cols, rows } = elevField;
@@ -702,9 +647,7 @@ function shadeRelief(altDeg, azDeg) {
   const azimuth = ((360 - azDeg + 90) * Math.PI) / 180;
   const cosZ = Math.cos(zenith);
   const sinZ = Math.sin(zenith);
-  let day = (altDeg + 8) / 20;
-  if (day < 0) day = 0;
-  else if (day > 1) day = 1;
+  const day = clamp01((altDeg + 8) / 20);
   const lit = 0.75 + 0.25 * day;
   const warm = altDeg > 0 && altDeg < 16 ? (16 - altDeg) / 16 : 0;
   const canvas = document.createElement("canvas");
@@ -735,9 +678,7 @@ function shadeRelief(altDeg, azDeg) {
       const dy = (z7 + 2 * z8 + z9 - (z1 + 2 * z2v + z3)) / (8 * cellY);
       const slope = Math.atan(Math.hypot(dx, dy));
       const aspect = Math.atan2(dy, -dx);
-      let hs = cosZ * Math.cos(slope) + sinZ * Math.sin(slope) * Math.cos(azimuth - aspect);
-      if (hs < 0) hs = 0;
-      else if (hs > 1) hs = 1;
+      let hs = clamp01(cosZ * Math.cos(slope) + sinZ * Math.sin(slope) * Math.cos(azimuth - aspect));
       if (day < 1) {
         const form = 0.42 + 0.58 * hs;
         hs = form * (1 - day) + hs * day;
@@ -746,18 +687,16 @@ function shadeRelief(altDeg, azDeg) {
       const e = elev[row + x];
       const kind = landMask ? landMask[row + x] : 0;
       const p = (row + x) * 4;
+      const col = LAND_COLOR[kind] || LAND_COLOR[0];
       if (kind === 4) {
-        data[p] = LAND_WATER[0];
-        data[p + 1] = LAND_WATER[1];
-        data[p + 2] = LAND_WATER[2];
+        data[p] = col[0];
+        data[p + 1] = col[1];
+        data[p + 2] = col[2];
         data[p + 3] = 255;
         continue;
       }
-      const col = kind === 1 ? LAND_PARK : kind === 2 ? LAND_WOODS : kind === 3 ? LAND_BEACH : LAND_CITY;
       const sk = SHADOW;
-      let h = 1 - (1 - hs) * sk;
-      if (h < 0) h = 0;
-      else if (h > 1) h = 1;
+      const h = clamp01(1 - (1 - hs) * sk);
       let gain = (0.42 + 0.58 * h) * (1 - Math.min(0.55, 0.22 * sk) * steep);
       let r = col[0] * gain;
       let gv = col[1] * gain;
@@ -765,33 +704,21 @@ function shadeRelief(altDeg, azDeg) {
       r = r * lit + 30 * warm * day;
       gv = gv * lit + 10 * warm * day;
       b = b * lit;
-      let a = (e - 0.3) / 1.6;
-      if (a < 0) a = 0;
-      else if (a > 1) a = 1;
       data[p] = r;
       data[p + 1] = gv;
       data[p + 2] = b;
-      data[p + 3] = a * 255;
+      data[p + 3] = clamp01((e - 0.3) / 1.6) * 255;
     }
   }
   g.putImageData(img, 0, 0);
   return canvas;
 }
 
-function reliefForHour(doy, hour, when) {
-  const key = doy + "-" + hour;
+function reliefForHour(key, when) {
   const hit = reliefHourCache.get(key);
   if (hit) return hit;
   const canvas = shadeRelief(when.alt, when.az);
   reliefHourCache.set(key, canvas);
-  if (reliefHourCache.size > 3) {
-    for (const k of reliefHourCache.keys()) {
-      if (k !== key) {
-        reliefHourCache.delete(k);
-        break;
-      }
-    }
-  }
   return canvas;
 }
 
@@ -807,14 +734,15 @@ function composeRelief(imgA, imgB, t) {
   g.setTransform(1, 0, 0, 1, 0, 0);
   g.clearRect(0, 0, w, h);
   // The map transform flips Y, so row 0 of this canvas is drawn in the south.
-  g.setTransform(1, 0, 0, -1, 0, h);
   // A is drawn opaque so B blends over it. Drawing both with partial alpha
   // onto a cleared canvas lets the page background through and flashes at :00.
-  g.globalAlpha = 1;
-  g.drawImage(imgA, 0, 0);
-  g.globalAlpha = t;
-  g.drawImage(imgB, 0, 0);
-  g.globalAlpha = 1;
+  paintSouthUp(reliefImage, (ctx) => {
+    ctx.globalAlpha = 1;
+    ctx.drawImage(imgA, 0, 0);
+    ctx.globalAlpha = t;
+    ctx.drawImage(imgB, 0, 0);
+    ctx.globalAlpha = 1;
+  });
 }
 
 function updateSunRelief() {
@@ -829,8 +757,13 @@ function updateSunRelief() {
   const t0 = dateFromPacific(p.year, p.month, p.day, h0, 0);
   let t1 = dateFromPacific(p.year, p.month, p.day, h1, 0);
   if (h1 === 0) t1 = new Date(t1.getTime() + 86400000);
-  const a = reliefForHour(doy, h0, sunPosition(t0));
-  const b = reliefForHour(doy + (h1 === 0 ? 1 : 0), h1, sunPosition(t1));
+  const keyA = doy + "-" + h0;
+  const keyB = doy + (h1 === 0 ? 1 : 0) + "-" + h1;
+  const a = reliefForHour(keyA, sunPosition(t0));
+  const b = reliefForHour(keyB, sunPosition(t1));
+  for (const k of [...reliefHourCache.keys()]) {
+    if (k !== keyA && k !== keyB) reliefHourCache.delete(k);
+  }
   composeRelief(a, b, t);
   scheduleDraw();
 }
@@ -1329,9 +1262,14 @@ function monthsBetween(first, last) {
   return out;
 }
 
-function formatMonth(key) {
-  const [y, m] = key.split("-").map(Number);
-  return new Date(y, m - 1, 1).toLocaleString("en-US", { month: "short", year: "numeric" });
+function previousMonth(key) {
+  let [y, m] = key.split("-").map(Number);
+  m -= 1;
+  if (m < 1) {
+    m = 12;
+    y -= 1;
+  }
+  return monthKey(y, m);
 }
 
 function setupTimeline(paths, progress) {
@@ -1341,7 +1279,6 @@ function setupTimeline(paths, progress) {
   if (keys.length === 0) {
     timelineMonths = [];
     timelineSrc = [];
-    timelinePath2Ds = [];
     timelineIndex = 0;
     rebuildStreetPaths();
     return;
@@ -1349,7 +1286,7 @@ function setupTimeline(paths, progress) {
   const now = new Date();
   const nowKey = monthKey(now.getFullYear(), now.getMonth() + 1);
   const lastKey = keys[keys.length - 1] > nowKey ? keys[keys.length - 1] : nowKey;
-  timelineMonths = monthsBetween(keys[0], lastKey);
+  timelineMonths = monthsBetween(previousMonth(keys[0]), lastKey);
   timelineSrc = timelineMonths.map((k) => (paths[k] ? paths[k] : ""));
   timelineIndex = timelineMonths.length - 1;
   rebuildStreetPaths();
@@ -1405,7 +1342,8 @@ function updateTimelineUI() {
   const label = document.getElementById("timelineLabel");
   const cutoff = timelineMonths[timelineIndex];
   if (!cutoff) return;
-  const monthText = formatMonth(cutoff);
+  const [y, m] = cutoff.split("-").map(Number);
+  const monthText = new Date(y, m - 1, 1).toLocaleString("en-US", { month: "short", year: "numeric" });
   if (label) label.textContent = monthText;
   if (slider) {
     const max = timelineMonths.length - 1;
@@ -1833,36 +1771,38 @@ mapWrap.addEventListener("pointerleave", function () {
   }
 });
 
-function zoomAt(canvasCx, canvasCy, k) {
-  markViewChanged();
+function viewZoomedBy(canvasCx, canvasCy, k) {
   const { w, h } = getCanvasCssSize();
   const { x: contentCx, y: contentCy } = canvasToContent(canvasCx, canvasCy, w, h);
   const oldScale = scale;
-  const floor = scaleFloor();
-  const newScale = Math.max(floor, Math.min(maxScale, scale * k));
-  const newTx = contentCx - ((contentCx - tx) * newScale) / oldScale;
-  const newTy = contentCy + ((ty - contentCy) * newScale) / oldScale;
+  const nextScale = Math.max(scaleFloor(), Math.min(maxScale, scale * k));
+  return {
+    scale: nextScale,
+    tx: contentCx - ((contentCx - tx) * nextScale) / oldScale,
+    ty: contentCy + ((ty - contentCy) * nextScale) / oldScale,
+  };
+}
+
+function zoomAt(canvasCx, canvasCy, k) {
+  markViewChanged();
+  const next = viewZoomedBy(canvasCx, canvasCy, k);
   if (prefersReducedMotion()) {
-    scale = newScale;
-    tx = newTx;
-    ty = newTy;
+    scale = next.scale;
+    tx = next.tx;
+    ty = next.ty;
     zoomTarget = null;
   } else {
-    zoomTarget = { scale: newScale, tx: newTx, ty: newTy };
+    zoomTarget = next;
   }
   scheduleDraw();
 }
 
 function applyZoomAt(canvasCx, canvasCy, k) {
   markViewChanged();
-  const { w, h } = getCanvasCssSize();
-  const { x: contentCx, y: contentCy } = canvasToContent(canvasCx, canvasCy, w, h);
-  const oldScale = scale;
-  const floor = scaleFloor();
-  const newScale = Math.max(floor, Math.min(maxScale, scale * k));
-  scale = newScale;
-  tx = contentCx - ((contentCx - tx) * newScale) / oldScale;
-  ty = contentCy + ((ty - contentCy) * newScale) / oldScale;
+  const next = viewZoomedBy(canvasCx, canvasCy, k);
+  scale = next.scale;
+  tx = next.tx;
+  ty = next.ty;
   zoomTarget = null;
   scheduleDraw();
 }
